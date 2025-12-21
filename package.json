@@ -1,0 +1,23 @@
+{
+  "name": "@crow-b3/local-dev",
+  "version": "1.0.0",
+  "description": "Local Development Starter Kit - Clone and sync all CROW-B3 repositories",
+  "type": "module",
+  "scripts": {
+    "clone": "bun run src/clone.ts",
+    "sync": "bun run src/sync.ts",
+    "clone:all": "bun run src/clone.ts --all",
+    "sync:force": "bun run src/sync.ts --force"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "keywords": [
+    "crow-b3",
+    "local-dev",
+    "monorepo",
+    "multi-repo"
+  ],
+  "author": "CROW-B3",
+  "license": "MIT"
+}
