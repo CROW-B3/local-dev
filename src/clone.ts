@@ -1,17 +1,7 @@
 #!/usr/bin/env bun
-/**
- * Clone Script
- *
- * Clones all CROW-B3 repositories to the parent directory.
- * If local-dev is at C:/CROW/local-dev, repos go to C:/CROW/
- *
- * Usage:
- *   bun run clone          # Clone repos marked as cloneByDefault
- *   bun run clone --all    # Clone ALL repos (including optional ones)
- *   bun run clone --help   # Show help
- */
-
-import { getReposToClone, getRepoUrl, getStats } from "../repos.config";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import { getReposToClone, getRepoUrl } from "../repos.config";
 import {
   cloneRepo,
   colors,
@@ -19,7 +9,6 @@ import {
   getRepoPath,
   getWorkspaceRoot,
   log,
-  parseArgs,
   printHeader,
   printSummary,
   repoExists,
@@ -27,93 +16,123 @@ import {
   symbols,
 } from "./utils";
 
-const showHelp = () => {
-  console.log(`
-${colors.bold}CROW-B3 Clone Script${colors.reset}
+interface CloneResult {
+  name: string;
+  success: boolean;
+  skipped: boolean;
+  reason?: string;
+}
 
-${colors.cyan}USAGE:${colors.reset}
-  bun run clone [options]
+const cloneRepoWithDeps = async (repoName: string, repoUrl: string): Promise<CloneResult> => {
+  const repoPath = getRepoPath(repoName);
 
-${colors.cyan}OPTIONS:${colors.reset}
-  --all, -a      Clone ALL repositories (including optional ones)
-  --help, -h     Show this help message
-  --verbose, -v  Show detailed output
+  if (repoExists(repoName)) {
+    return { name: repoName, success: false, skipped: true, reason: "Already exists" };
+  }
 
-${colors.cyan}DESCRIPTION:${colors.reset}
-  Clones CROW-B3 repositories to the parent directory.
+  const cloneSuccess = await cloneRepo(repoUrl, repoPath);
+  if (!cloneSuccess) {
+    return { name: repoName, success: false, skipped: false, reason: "Clone failed" };
+  }
 
-  ${colors.dim}Example:${colors.reset}
-  If local-dev is at ${colors.yellow}C:/CROW/local-dev${colors.reset}
-  Repos will be cloned to ${colors.yellow}C:/CROW/*${colors.reset}
+  const pm = detectPackageManager(repoPath);
+  if (pm !== "none") {
+    const installSuccess = await runInstall(repoPath);
+    if (!installSuccess) {
+      return { name: repoName, success: true, skipped: false, reason: `Cloned (${pm} install failed)` };
+    }
+  }
 
-${colors.cyan}REPOSITORIES:${colors.reset}
-  By default, clones ${colors.green}${getStats().defaultClone}${colors.reset} repositories.
-  With --all, clones ${colors.yellow}${getStats().defaultClone + getStats().optional}${colors.reset} repositories.
-`);
+  return { name: repoName, success: true, skipped: false };
 };
 
 const main = async () => {
-  const args = parseArgs();
+  const argv = await yargs(hideBin(process.argv))
+    .scriptName("clone")
+    .usage("$0 [options]")
+    .option("all", {
+      alias: "a",
+      type: "boolean",
+      description: "Clone ALL repositories (including optional ones)",
+      default: false,
+    })
+    .option("only", {
+      alias: "o",
+      type: "array",
+      string: true,
+      description: "Clone only specific repo(s)",
+      default: [] as string[],
+    })
+    .option("dry-run", {
+      alias: "n",
+      type: "boolean",
+      description: "Show what would be cloned without doing it",
+      default: false,
+    })
+    .example("$0", "Clone default repos")
+    .example("$0 --all", "Clone all repos including optional")
+    .example("$0 --only core-auth-service", "Clone specific repo")
+    .example("$0 --dry-run", "Preview what would be cloned")
+    .help()
+    .alias("help", "h")
+    .parse();
 
-  if (args.help) {
-    showHelp();
-    process.exit(0);
-  }
+  const dryRun = argv["dry-run"] as boolean;
+  const only = argv.only as string[];
 
-  printHeader("CROW-B3 Repository Cloner");
+  printHeader(dryRun ? "Clone (DRY RUN)" : "Clone");
+
+  if (dryRun) log.warn("Dry run mode - no changes will be made");
 
   const workspaceRoot = getWorkspaceRoot();
-  log.info(`Workspace root: ${colors.yellow}${workspaceRoot}${colors.reset}`);
+  log.info(`Workspace: ${colors.yellow}${workspaceRoot}${colors.reset}`);
 
-  const repos = getReposToClone(args.all);
-  log.info(`Repositories to clone: ${colors.cyan}${repos.length}${colors.reset}`);
-  console.log("");
+  let repos = getReposToClone(argv.all);
 
-  const results = {
-    success: [] as string[],
-    failed: [] as string[],
-    skipped: [] as string[],
-  };
+  if (only.length > 0) {
+    repos = repos.filter(r => only.includes(r.name));
+    if (repos.length === 0) {
+      log.error(`No matching repositories: ${only.join(", ")}`);
+      process.exit(1);
+    }
+    log.info(`Filter: ${colors.cyan}${only.join(", ")}${colors.reset}`);
+  }
+
+  log.info(`Repositories: ${colors.cyan}${repos.length}${colors.reset}\n`);
+
+  const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
   for (const repo of repos) {
-    const repoPath = getRepoPath(repo.name);
     const repoUrl = getRepoUrl(repo.name);
-
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
-    if (repoExists(repo.name)) {
-      console.log(`${colors.yellow}[SKIP]${colors.reset} Already exists`);
-      results.skipped.push(repo.name);
-      continue;
-    }
-
-    console.log(`${colors.dim}cloning...${colors.reset}`);
-    const cloneSuccess = await cloneRepo(repoUrl, repoPath);
-
-    if (!cloneSuccess) {
-      log.error(`  Failed to clone ${repo.name}`);
-      results.failed.push(repo.name);
-      continue;
-    }
-
-    const pm = detectPackageManager(repoPath);
-    if (pm !== "none") {
-      log.dim(`  Package manager: ${pm}`);
-      const installSuccess = await runInstall(repoPath);
-      if (!installSuccess) {
-        log.warn(`  Install failed for ${repo.name}`);
+    if (dryRun) {
+      if (repoExists(repo.name)) {
+        console.log(`${colors.yellow}[SKIP]${colors.reset} Already exists`);
+        results.skipped.push(repo.name);
+      } else {
+        console.log(`${colors.cyan}[WOULD CLONE]${colors.reset}`);
+        results.success.push(repo.name);
       }
+      continue;
     }
 
-    log.success(`  ${repo.name} cloned successfully`);
-    results.success.push(repo.name);
+    const result = await cloneRepoWithDeps(repo.name, repoUrl);
+
+    if (result.skipped) {
+      console.log(`${colors.yellow}[SKIP]${colors.reset} ${result.reason}`);
+      results.skipped.push(repo.name);
+    } else if (result.success) {
+      console.log(`${colors.green}[OK]${colors.reset}`);
+      results.success.push(repo.name);
+    } else {
+      console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
+      results.failed.push(repo.name);
+    }
   }
 
   printSummary(results);
-
-  if (results.failed.length > 0) {
-    process.exit(1);
-  }
+  if (results.failed.length > 0) process.exit(1);
 };
 
 main().catch((err) => {

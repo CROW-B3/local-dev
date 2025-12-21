@@ -1,20 +1,8 @@
 #!/usr/bin/env bun
-/**
- * Sync Script
- *
- * Synchronizes all CROW-B3 repositories:
- * 1. Checks for uncommitted changes
- * 2. If clean: checkout main, pull, install dependencies
- * 3. If dirty: skip with warning (unless --force)
- *
- * Usage:
- *   bun run sync           # Sync repos (skip dirty ones)
- *   bun run sync --force   # Stash changes and sync anyway
- *   bun run sync --help    # Show help
- */
-
 import { $ } from "bun";
-import { getReposToClone, getStats } from "../repos.config";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import { getReposToClone } from "../repos.config";
 import {
   checkoutBranch,
   colors,
@@ -26,7 +14,6 @@ import {
   getWorkspaceRoot,
   hasUncommittedChanges,
   log,
-  parseArgs,
   printHeader,
   printSummary,
   pullLatest,
@@ -34,31 +21,6 @@ import {
   runInstall,
   symbols,
 } from "./utils";
-
-const showHelp = () => {
-  console.log(`
-${colors.bold}CROW-B3 Sync Script${colors.reset}
-
-${colors.cyan}USAGE:${colors.reset}
-  bun run sync [options]
-
-${colors.cyan}OPTIONS:${colors.reset}
-  --force, -f    Stash changes and sync anyway
-  --all, -a      Sync ALL repositories (including optional ones)
-  --help, -h     Show this help message
-  --verbose, -v  Show detailed output
-
-${colors.cyan}DESCRIPTION:${colors.reset}
-  For each repository:
-  1. Check for uncommitted changes
-  2. If clean: checkout main ${symbols.arrow} pull ${symbols.arrow} install deps
-  3. If dirty: skip (or stash with --force)
-
-${colors.cyan}REPOSITORIES:${colors.reset}
-  Syncs ${colors.green}${getStats().defaultClone}${colors.reset} repositories by default.
-  With --all, syncs ${colors.yellow}${getStats().defaultClone + getStats().optional}${colors.reset} repositories.
-`);
-};
 
 interface SyncResult {
   name: string;
@@ -78,40 +40,30 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
   const currentBranch = await getCurrentBranch(repoPath);
 
   if (hasChanges && !force) {
-    return {
-      name: repoName,
-      success: false,
-      skipped: true,
-      reason: `Has uncommitted changes on ${currentBranch}`,
-    };
+    return { name: repoName, success: false, skipped: true, reason: `Dirty (${currentBranch})` };
   }
 
   if (hasChanges && force) {
-    log.dim(`  Stashing changes...`);
-    await $`git -C ${repoPath} stash push -m "local-dev sync stash"`.quiet().nothrow();
+    await $`git -C ${repoPath} stash push -m "local-dev sync"`.quiet().nothrow();
   }
 
-  log.dim(`  Fetching...`);
   await fetchRemote(repoPath);
 
   const defaultBranch = await getDefaultBranch(repoPath);
   if (currentBranch !== defaultBranch) {
-    log.dim(`  Checking out ${defaultBranch}...`);
     const checkoutSuccess = await checkoutBranch(repoPath, defaultBranch);
     if (!checkoutSuccess) {
-      return { name: repoName, success: false, skipped: false, reason: `Failed to checkout ${defaultBranch}` };
+      return { name: repoName, success: false, skipped: false, reason: `Checkout ${defaultBranch} failed` };
     }
   }
 
-  log.dim(`  Pulling...`);
   const pullSuccess = await pullLatest(repoPath);
   if (!pullSuccess) {
-    return { name: repoName, success: false, skipped: false, reason: "Failed to pull" };
+    return { name: repoName, success: false, skipped: false, reason: "Pull failed" };
   }
 
   const pm = detectPackageManager(repoPath);
   if (pm !== "none") {
-    log.dim(`  Installing dependencies (${pm})...`);
     const installSuccess = await runInstall(repoPath);
     if (!installSuccess) {
       return { name: repoName, success: false, skipped: false, reason: "Install failed" };
@@ -121,55 +73,111 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
   return { name: repoName, success: true, skipped: false };
 };
 
+const checkRepoStatus = async (repoName: string) => {
+  const repoPath = getRepoPath(repoName);
+  if (!repoExists(repoName)) return { exists: false, hasChanges: false, branch: "N/A" };
+  const hasChanges = await hasUncommittedChanges(repoPath);
+  const branch = await getCurrentBranch(repoPath);
+  return { exists: true, hasChanges, branch };
+};
+
 const main = async () => {
-  const args = parseArgs();
+  const argv = await yargs(hideBin(process.argv))
+    .scriptName("sync")
+    .usage("$0 [options]")
+    .option("force", {
+      alias: "f",
+      type: "boolean",
+      description: "Stash changes and sync anyway",
+      default: false,
+    })
+    .option("all", {
+      alias: "a",
+      type: "boolean",
+      description: "Sync ALL repositories (including optional ones)",
+      default: false,
+    })
+    .option("only", {
+      alias: "o",
+      type: "array",
+      string: true,
+      description: "Sync only specific repo(s)",
+      default: [] as string[],
+    })
+    .option("dry-run", {
+      alias: "n",
+      type: "boolean",
+      description: "Show what would be synced without doing it",
+      default: false,
+    })
+    .example("$0", "Sync default repos")
+    .example("$0 --force", "Stash changes and sync")
+    .example("$0 --only core-auth-service", "Sync specific repo")
+    .example("$0 --dry-run", "Preview what would be synced")
+    .help()
+    .alias("help", "h")
+    .parse();
 
-  if (args.help) {
-    showHelp();
-    process.exit(0);
-  }
+  const dryRun = argv["dry-run"] as boolean;
+  const only = argv.only as string[];
 
-  printHeader("CROW-B3 Repository Sync");
+  printHeader(dryRun ? "Sync (DRY RUN)" : "Sync");
+
+  if (dryRun) log.warn("Dry run mode - no changes will be made");
+  if (argv.force) log.warn("Force mode - will stash uncommitted changes");
 
   const workspaceRoot = getWorkspaceRoot();
-  log.info(`Workspace root: ${colors.yellow}${workspaceRoot}${colors.reset}`);
+  log.info(`Workspace: ${colors.yellow}${workspaceRoot}${colors.reset}`);
 
-  if (args.force) {
-    log.warn(`Force mode enabled - will stash uncommitted changes`);
+  let repos = getReposToClone(argv.all);
+
+  if (only.length > 0) {
+    repos = repos.filter(r => only.includes(r.name));
+    if (repos.length === 0) {
+      log.error(`No matching repositories: ${only.join(", ")}`);
+      process.exit(1);
+    }
+    log.info(`Filter: ${colors.cyan}${only.join(", ")}${colors.reset}`);
   }
 
-  const repos = getReposToClone(args.all);
-  log.info(`Repositories to sync: ${colors.cyan}${repos.length}${colors.reset}`);
-  console.log("");
+  log.info(`Repositories: ${colors.cyan}${repos.length}${colors.reset}\n`);
 
-  const results = {
-    success: [] as string[],
-    failed: [] as string[],
-    skipped: [] as string[],
-  };
+  const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
   for (const repo of repos) {
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
-    const result = await syncRepo(repo.name, args.force);
+    if (dryRun) {
+      const status = await checkRepoStatus(repo.name);
+      if (!status.exists) {
+        console.log(`${colors.yellow}[SKIP]${colors.reset} Not cloned`);
+        results.skipped.push(repo.name);
+      } else if (status.hasChanges && !argv.force) {
+        console.log(`${colors.yellow}[WOULD SKIP]${colors.reset} Dirty (${status.branch})`);
+        results.skipped.push(repo.name);
+      } else {
+        console.log(`${colors.cyan}[WOULD SYNC]${colors.reset} (${status.branch})`);
+        results.success.push(repo.name);
+      }
+      continue;
+    }
+
+    const result = await syncRepo(repo.name, argv.force);
 
     if (result.skipped) {
       console.log(`${colors.yellow}[SKIP]${colors.reset} ${result.reason}`);
-      results.skipped.push(`${repo.name}: ${result.reason}`);
+      results.skipped.push(repo.name);
     } else if (result.success) {
-      console.log(`${colors.green}[OK]${colors.reset} Synced`);
+      console.log(`${colors.green}[OK]${colors.reset}`);
       results.success.push(repo.name);
     } else {
       console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
-      results.failed.push(`${repo.name}: ${result.reason}`);
+      results.failed.push(repo.name);
     }
   }
 
   printSummary(results);
-
-  if (results.failed.length > 0) {
-    process.exit(1);
-  }
+  if (results.failed.length > 0) process.exit(1);
 };
 
 main().catch((err) => {
