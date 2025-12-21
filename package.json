@@ -10,7 +10,7 @@
     "sync:force": "bun run src/sync.ts --force"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "^1.0.20"
   },
   "keywords": [
     "crow-b3",
