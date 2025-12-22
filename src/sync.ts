@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 import { $ } from "bun";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -13,6 +14,7 @@ import {
   getRepoPath,
   getWorkspaceRoot,
   hasUncommittedChanges,
+  initializeHusky,
   log,
   printHeader,
   printSummary,
@@ -63,22 +65,22 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
   }
 
   const pm = detectPackageManager(repoPath);
-  if (pm !== "none") {
-    const installSuccess = await runInstall(repoPath);
-    if (!installSuccess) {
-      return { name: repoName, success: false, skipped: false, reason: "Install failed" };
-    }
+  if (pm === "none") {
+    return { name: repoName, success: true, skipped: false };
+  }
+
+  const installSuccess = await runInstall(repoPath);
+  if (!installSuccess) {
+    return { name: repoName, success: false, skipped: false, reason: "Install failed" };
+  }
+
+  // Initialize Husky if repo has .husky directory
+  const huskySuccess = await initializeHusky(repoPath);
+  if (!huskySuccess) {
+    return { name: repoName, success: false, skipped: false, reason: "Husky init failed" };
   }
 
   return { name: repoName, success: true, skipped: false };
-};
-
-const checkRepoStatus = async (repoName: string) => {
-  const repoPath = getRepoPath(repoName);
-  if (!repoExists(repoName)) return { exists: false, hasChanges: false, branch: "N/A" };
-  const hasChanges = await hasUncommittedChanges(repoPath);
-  const branch = await getCurrentBranch(repoPath);
-  return { exists: true, hasChanges, branch };
 };
 
 const main = async () => {
@@ -104,26 +106,17 @@ const main = async () => {
       description: "Sync only specific repo(s)",
       default: [] as string[],
     })
-    .option("dry-run", {
-      alias: "n",
-      type: "boolean",
-      description: "Show what would be synced without doing it",
-      default: false,
-    })
     .example("$0", "Sync default repos")
     .example("$0 --force", "Stash changes and sync")
     .example("$0 --only core-auth-service", "Sync specific repo")
-    .example("$0 --dry-run", "Preview what would be synced")
     .help()
     .alias("help", "h")
     .parse();
 
-  const dryRun = argv["dry-run"] as boolean;
   const only = argv.only as string[];
 
-  printHeader(dryRun ? "Sync (DRY RUN)" : "Sync");
+  printHeader("Sync");
 
-  if (dryRun) log.warn("Dry run mode - no changes will be made");
   if (argv.force) log.warn("Force mode - will stash uncommitted changes");
 
   const workspaceRoot = getWorkspaceRoot();
@@ -133,11 +126,12 @@ const main = async () => {
 
   if (only.length > 0) {
     repos = repos.filter(r => only.includes(r.name));
-    if (repos.length === 0) {
-      log.error(`No matching repositories: ${only.join(", ")}`);
-      process.exit(1);
-    }
     log.info(`Filter: ${colors.cyan}${only.join(", ")}${colors.reset}`);
+  }
+
+  if (repos.length === 0) {
+    log.error(`No matching repositories: ${only.join(", ")}`);
+    process.exit(1);
   }
 
   log.info(`Repositories: ${colors.cyan}${repos.length}${colors.reset}\n`);
@@ -146,21 +140,6 @@ const main = async () => {
 
   for (const repo of repos) {
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
-
-    if (dryRun) {
-      const status = await checkRepoStatus(repo.name);
-      if (!status.exists) {
-        console.log(`${colors.yellow}[SKIP]${colors.reset} Not cloned`);
-        results.skipped.push(repo.name);
-      } else if (status.hasChanges && !argv.force) {
-        console.log(`${colors.yellow}[WOULD SKIP]${colors.reset} Dirty (${status.branch})`);
-        results.skipped.push(repo.name);
-      } else {
-        console.log(`${colors.cyan}[WOULD SYNC]${colors.reset} (${status.branch})`);
-        results.success.push(repo.name);
-      }
-      continue;
-    }
 
     const result = await syncRepo(repo.name, argv.force);
 

@@ -27,6 +27,7 @@ export const symbols = { success: "+", error: "x", warning: "!", arrow: ">" };
 
 export const getWorkspaceRoot = (): string => join(process.cwd(), "..");
 export const getRepoPath = (repoName: string): string => join(getWorkspaceRoot(), repoName);
+export const dirExists = (repoName: string): boolean => existsSync(getRepoPath(repoName));
 export const repoExists = (repoName: string): boolean => existsSync(join(getRepoPath(repoName), ".git"));
 
 export const hasUncommittedChanges = async (repoPath: string): Promise<boolean> => {
@@ -132,6 +133,21 @@ export const printHeader = (title: string) => {
   console.log(`\n${colors.bold}${colors.cyan}${"=".repeat(50)}${colors.reset}`);
   console.log(`${colors.bold}${colors.cyan}  ${title}${colors.reset}`);
   console.log(`${colors.bold}${colors.cyan}${"=".repeat(50)}${colors.reset}\n`);
+};
+
+export const hasHusky = (repoPath: string): boolean => {
+  return existsSync(join(repoPath, ".husky"));
+};
+
+export const initializeHusky = async (repoPath: string): Promise<boolean> => {
+  if (!hasHusky(repoPath)) return true; // No husky to initialize
+
+  try {
+    const result = await $`bunx husky`.cwd(repoPath).quiet().nothrow();
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
 };
 
 export const printSummary = (results: { success: string[]; failed: string[]; skipped: string[] }) => {
