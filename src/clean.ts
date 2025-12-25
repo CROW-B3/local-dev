@@ -79,9 +79,8 @@ const selectService = async (): Promise<ServiceResources> => {
 };
 
 const selectResourceType = async (service: ServiceResources): Promise<ResourceType> => {
-  // Show what will be affected for each option
-  const d1Names = service.d1.map(d => `${tag(d.env)} ${d.name}`).join("\n              ");
-  const r2Names = service.r2.map(r => `${tag(r.env)} ${r.name}`).join("\n              ");
+  const d1List = service.d1.map(d => `${tag(d.env)} ${d.name}`).join(", ");
+  const r2List = service.r2.map(r => `${tag(r.env)} ${r.name}`).join(", ");
 
   return await select({
     message: "What to clean?",
@@ -89,16 +88,17 @@ const selectResourceType = async (service: ServiceResources): Promise<ResourceTy
       {
         name: `${c.blue}D1${c.reset} Database only`,
         value: "d1" as const,
-        description: d1Names,
+        description: d1List,
       },
       {
         name: `${c.magenta}R2${c.reset} Bucket only`,
         value: "r2" as const,
-        description: r2Names,
+        description: r2List,
       },
       {
         name: `${c.cyan}Both${c.reset} D1 + R2`,
         value: "both" as const,
+        description: `${d1List}, ${r2List}`,
       },
     ],
   });
