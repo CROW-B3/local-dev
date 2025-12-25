@@ -16,7 +16,7 @@ export interface ServiceResources {
   r2: R2Resource[];
 }
 
-export const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
+export const CLOUDFLARE_ACCOUNT_ID = "8f0203259905d8923687286c84921e6c";
 
 export const SERVICES: ServiceResources[] = [
   {

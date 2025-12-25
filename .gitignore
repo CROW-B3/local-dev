@@ -24,8 +24,12 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment
+.env
 .env.local
 .env.*.local
+
+# Wrangler config (contains account ID)
+wrangler.toml
 
 # Build output
 dist/

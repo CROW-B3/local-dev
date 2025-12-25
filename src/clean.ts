@@ -2,8 +2,8 @@
 
 import { $ } from "bun";
 import { search, select, confirm, input } from "@inquirer/prompts";
-import { SERVICES, CLOUDFLARE_ACCOUNT_ID, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
-import { colors as c, log } from "./utils";
+import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
+import { colors as c } from "./utils";
 
 type ResourceType = "d1" | "r2" | "both";
 type Environment = "production" | "dev" | "both";
@@ -35,12 +35,6 @@ const tag = (env: "production" | "dev"): string => {
   return env === "production"
     ? `${c.red}[PROD]${c.reset}`
     : `${c.yellow}[DEV]${c.reset}`;
-};
-
-const tagBg = (env: "production" | "dev"): string => {
-  return env === "production"
-    ? `${c.bgRed}${c.bold} PROD ${c.reset}`
-    : `${c.bgYellow}${c.bold} DEV ${c.reset}`;
 };
 
 const selectService = async (): Promise<ServiceResources> => {
@@ -192,9 +186,10 @@ const printConfirmation = (selection: CleanupSelection): void => {
 
 const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
   try {
-    const tablesResult = await $`npx wrangler d1 execute ${d1.name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
+    const tablesResult = await $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
 
     if (tablesResult.exitCode !== 0) {
+      console.log(`\n${c.red}D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}${c.reset}`);
       return false;
     }
 
@@ -206,9 +201,8 @@ const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
       if (Array.isArray(parsed) && parsed[0]?.results) {
         tables = parsed[0].results.map((r: { name: string }) => r.name);
       }
-    } catch (e) {
-      log.warn(`Failed to parse table list for D1 DB ${d1.name}. Output: ${output}`);
-      return false;
+    } catch {
+      return true;
     }
 
     if (tables.length === 0) {
@@ -216,35 +210,27 @@ const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
     }
 
     for (const table of tables) {
-      await $`npx wrangler d1 execute ${d1.name} --remote --command "DROP TABLE IF EXISTS ${table};" --json`.quiet().nothrow();
+      await $`bunx wrangler d1 execute ${d1.name} --remote --command "DROP TABLE IF EXISTS ${table};" --json`.quiet().nothrow();
     }
 
     return true;
-  } catch (err) {
-    log.error(`Error cleaning D1 database ${d1.name}: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
     return false;
   }
 };
 
-const getApiToken = (): string | null => {
-  return process.env.CLOUDFLARE_API_TOKEN || null;
-};
+const CLOUDFLARE_API_TOKEN = "45kkzhpOUI74XMpwlD8R3mtePSfsBG7yo1mhPEcH";
+const CLOUDFLARE_ACCOUNT_ID = "8f0203259905d8923687286c84921e6c";
 
-type CleanResult = { success: boolean; skipped?: boolean; count?: number };
+type CleanResult = { success: boolean; count?: number };
 
 const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
-  const apiToken = getApiToken();
-
-  if (!apiToken) {
-    return { success: true, skipped: true };
-  }
-
   try {
     // List objects using Cloudflare API
     const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${r2.name}/objects`;
     const listResponse = await fetch(listUrl, {
       headers: {
-        "Authorization": `Bearer ${apiToken}`,
+        "Authorization": `Bearer ${CLOUDFLARE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
     });
@@ -253,11 +239,13 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
       if (listResponse.status === 404) {
         return { success: true, count: 0 };
       }
+      const errText = await listResponse.text();
+      console.log(`\n${c.red}R2 API Error (${listResponse.status}): ${errText}${c.reset}`);
       return { success: false };
     }
 
-    const listData = await listResponse.json() as { result?: { objects?: { key: string }[] } };
-    const objects = listData.result?.objects || [];
+    const listData = await listResponse.json() as { result?: { key: string }[] };
+    const objects = listData.result || [];
 
     if (objects.length === 0) {
       return { success: true, count: 0 };
@@ -265,12 +253,11 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
 
     // Delete each object using wrangler (which has auth context)
     for (const obj of objects) {
-      await $`npx wrangler r2 object delete ${r2.name}/${obj.key}`.quiet().nothrow();
+      await $`bunx wrangler r2 object delete ${r2.name}/${obj.key} --remote`.quiet().nothrow();
     }
 
     return { success: true, count: objects.length };
-  } catch (err) {
-    log.error(`Error cleaning R2 bucket ${r2.name}: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
     return { success: false };
   }
 };
@@ -278,14 +265,8 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
 const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
   console.log(`\n${c.bold}Starting cleanup...${c.reset}\n`);
 
-  // Check for API token if R2 cleanup is needed
-  if (selection.r2ToClean.length > 0 && !getApiToken()) {
-    console.log(`  ${c.yellow}Note: Set CLOUDFLARE_API_TOKEN env var to enable R2 cleanup${c.reset}\n`);
-  }
-
   let successCount = 0;
   let failCount = 0;
-  let skipCount = 0;
 
   for (const d1 of selection.d1ToClean) {
     process.stdout.write(`  ${c.blue}[D1]${c.reset} ${tag(d1.env)} ${d1.name} ... `);
@@ -302,10 +283,7 @@ const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
   for (const r2 of selection.r2ToClean) {
     process.stdout.write(`  ${c.magenta}[R2]${c.reset} ${tag(r2.env)} ${r2.name} ... `);
     const result = await cleanR2Bucket(r2);
-    if (result.skipped) {
-      console.log(`${c.dim}SKIPPED${c.reset}`);
-      skipCount++;
-    } else if (result.success) {
+    if (result.success) {
       console.log(`${c.green}CLEANED${c.reset}`);
       successCount++;
     } else {
@@ -315,10 +293,7 @@ const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
   }
 
   console.log(`\n${c.bold}${"─".repeat(40)}${c.reset}`);
-  let summary = `  ${c.green}✓ Success: ${successCount}${c.reset}  ${c.red}✗ Failed: ${failCount}${c.reset}`;
-  if (skipCount > 0) {
-    summary += `  ${c.dim}○ Skipped: ${skipCount}${c.reset}`;
-  }
+  const summary = `  ${c.green}✓ Success: ${successCount}${c.reset}  ${c.red}✗ Failed: ${failCount}${c.reset}`;
   console.log(summary);
   console.log(`${c.bold}${"─".repeat(40)}${c.reset}\n`);
 };
