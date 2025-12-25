@@ -346,9 +346,9 @@ const main = async () => {
 
     if (hasProd) {
       const typed = await input({
-        message: `${c.red}${c.bold}Type "DELETE PRODUCTION" to confirm:${c.reset}`
+        message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
       });
-      if (typed !== "DELETE PRODUCTION") {
+      if (typed !== "DELETE") {
         console.log(`\n${c.yellow}Aborted.${c.reset}\n`);
         process.exit(0);
       }
