@@ -79,8 +79,9 @@ const selectService = async (): Promise<ServiceResources> => {
 };
 
 const selectResourceType = async (service: ServiceResources): Promise<ResourceType> => {
-  const d1List = service.d1.map(d => `${tag(d.env)} ${d.name}`).join(", ");
-  const r2List = service.r2.map(r => `${tag(r.env)} ${r.name}`).join(", ");
+  const d1Lines = service.d1.map(d => `${tag(d.env)} ${d.name}`).join("\n");
+  const r2Lines = service.r2.map(r => `${tag(r.env)} ${r.name}`).join("\n");
+  const allLines = [...service.d1, ...service.r2].map(r => `${tag(r.env)} ${r.name}`).join("\n");
 
   return await select({
     message: "What to clean?",
@@ -88,17 +89,17 @@ const selectResourceType = async (service: ServiceResources): Promise<ResourceTy
       {
         name: `${c.blue}D1${c.reset} Database only`,
         value: "d1" as const,
-        description: d1List,
+        description: d1Lines,
       },
       {
         name: `${c.magenta}R2${c.reset} Bucket only`,
         value: "r2" as const,
-        description: r2List,
+        description: r2Lines,
       },
       {
         name: `${c.cyan}Both${c.reset} D1 + R2`,
         value: "both" as const,
-        description: `${d1List}, ${r2List}`,
+        description: allLines,
       },
     ],
   });
@@ -108,7 +109,6 @@ const selectEnvironment = async (
   service: ServiceResources,
   resourceType: ResourceType
 ): Promise<Environment> => {
-  // Build descriptions showing what will be cleaned
   const getResources = (env: "production" | "dev") => {
     const items: string[] = [];
     if (resourceType === "d1" || resourceType === "both") {
@@ -117,7 +117,18 @@ const selectEnvironment = async (
     if (resourceType === "r2" || resourceType === "both") {
       items.push(...service.r2.filter(r => r.env === env).map(r => `${c.magenta}R2${c.reset} ${r.name}`));
     }
-    return items.join(", ");
+    return items.join("\n");
+  };
+
+  const getAllResources = () => {
+    const items: string[] = [];
+    if (resourceType === "d1" || resourceType === "both") {
+      items.push(...service.d1.map(d => `${tag(d.env)} ${c.blue}D1${c.reset} ${d.name}`));
+    }
+    if (resourceType === "r2" || resourceType === "both") {
+      items.push(...service.r2.map(r => `${tag(r.env)} ${c.magenta}R2${c.reset} ${r.name}`));
+    }
+    return items.join("\n");
   };
 
   return await select({
@@ -136,7 +147,7 @@ const selectEnvironment = async (
       {
         name: `${c.red}${c.bold}[BOTH]${c.reset} ${c.dim}(very dangerous!)${c.reset}`,
         value: "both" as const,
-        description: `${getResources("dev")}, ${getResources("production")}`,
+        description: getAllResources(),
       },
     ],
   });
