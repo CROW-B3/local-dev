@@ -15,6 +15,7 @@ import {
   getWorkspaceRoot,
   hasUncommittedChanges,
   initializeHusky,
+  isRemoteEmpty,
   log,
   printHeader,
   printSummary,
@@ -50,6 +51,10 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
   }
 
   await fetchRemote(repoPath);
+
+  if (await isRemoteEmpty(repoPath)) {
+    return { name: repoName, success: false, skipped: true, reason: "Remote is empty" };
+  }
 
   const defaultBranch = await getDefaultBranch(repoPath);
   if (currentBranch !== defaultBranch) {
