@@ -52,7 +52,6 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
 
   await fetchRemote(repoPath);
 
-  // Skip empty repositories (no branches on remote)
   if (await isRemoteEmpty(repoPath)) {
     return { name: repoName, success: false, skipped: true, reason: "Remote is empty" };
   }
