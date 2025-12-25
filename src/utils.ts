@@ -66,7 +66,7 @@ export const getDefaultBranch = async (repoPath: string): Promise<string> => {
 export const isRemoteEmpty = async (repoPath: string): Promise<boolean> => {
   try {
     const result = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
-    return result.stdout.toString().trim().length === 0;
+    return result.exitCode !== 0 || result.stdout.toString().trim().length === 0;
   } catch {
     return true;
   }
