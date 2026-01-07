@@ -46,6 +46,33 @@ bun run sync --dry-run    # Preview without syncing
 bun run sync --help       # Show help
 ```
 
+### Update
+
+```bash
+bun run update            # Update bun dependencies in all repos
+bun run update --all      # Update all repos including optional
+bun run update --only NAME # Update specific repo
+bun run update --help     # Show help
+```
+
+### Create Pull Requests
+
+```bash
+bun run pr                # Create PRs from current branches
+bun run pr:update         # Update deps and create PRs (force mode)
+bun run pr --force --title "chore: update deps" # Custom force update
+bun run pr --draft        # Create as draft PRs
+bun run pr --only NAME    # Create PR in specific repo
+bun run pr --help         # Show help
+```
+
+**Force mode (`--force`)** will:
+1. Stash uncommitted changes
+2. Checkout to main branch
+3. Run `bun update`
+4. Create new branch and commit changes
+5. Push and create PR
+
 ## Workspace Structure
 
 ```

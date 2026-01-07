@@ -6,8 +6,12 @@
   "scripts": {
     "clone": "bun run src/clone.ts",
     "sync": "bun run src/sync.ts",
+    "update": "bun run src/update.ts",
+    "pr": "bun run src/pr.ts",
     "clone:all": "bun run src/clone.ts --all",
-    "sync:force": "bun run src/sync.ts --force"
+    "sync:force": "bun run src/sync.ts --force",
+    "update:all": "bun run src/update.ts --all",
+    "pr:update": "bun run src/pr.ts --force"
   },
   "devDependencies": {
     "@types/bun": "1.3.5",
