@@ -17,6 +17,7 @@ import {
   repoExists,
   runInstall,
   symbols,
+  withConcurrency,
 } from "./utils";
 
 interface CloneResult {
@@ -108,8 +109,8 @@ const main = async () => {
 
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
-  // Clone repos in parallel for better performance
-  const clonePromises = repos.map(async (repo) => {
+  // Clone repos with concurrency limit (max 5 parallel) for optimal performance
+  const cloneTasks = repos.map((repo) => async () => {
     const repoUrl = getRepoUrl(repo.name);
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
@@ -129,7 +130,7 @@ const main = async () => {
     return result;
   });
 
-  await Promise.all(clonePromises);
+  await withConcurrency(cloneTasks, 5);
 
   printSummary(results);
   if (results.failed.length > 0) process.exit(1);

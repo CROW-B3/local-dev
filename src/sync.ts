@@ -20,6 +20,7 @@ import {
   repoExists,
   runInstall,
   symbols,
+  withConcurrency,
 } from "./utils";
 
 interface SyncResult {
@@ -139,8 +140,8 @@ const main = async () => {
 
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
-  // Sync repos in parallel for better performance
-  const syncPromises = repos.map(async (repo) => {
+  // Sync repos with concurrency limit (max 5 parallel) for optimal performance
+  const syncTasks = repos.map((repo) => async () => {
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
     const result = await syncRepo(repo.name, argv.force);
@@ -159,7 +160,7 @@ const main = async () => {
     return result;
   });
 
-  await Promise.all(syncPromises);
+  await withConcurrency(syncTasks, 5);
 
   printSummary(results);
   if (results.failed.length > 0) process.exit(1);

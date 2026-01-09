@@ -278,8 +278,8 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
       return { success: true, count: 0 };
     }
 
-    // Delete objects in parallel batches (up to 5 concurrent deletes)
-    const batchSize = 5;
+    // Delete objects in parallel batches (up to 10 concurrent deletes)
+    const batchSize = 10;
     for (let i = 0; i < objects.length; i += batchSize) {
       const batch = objects.slice(i, i + batchSize);
       const deletePromises = batch.map(obj =>
@@ -300,29 +300,39 @@ const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
   let successCount = 0;
   let failCount = 0;
 
+  // Run D1 and R2 cleanup operations in parallel
+  const cleanupPromises: Promise<void>[] = [];
+
   for (const d1 of selection.d1ToClean) {
-    process.stdout.write(`  ${c.blue}[D1]${c.reset} ${tag(d1.env)} ${d1.name} ... `);
-    const success = await cleanD1Database(d1);
-    if (success) {
-      console.log(`${c.green}CLEANED${c.reset}`);
-      successCount++;
-    } else {
-      console.log(`${c.red}FAILED${c.reset}`);
-      failCount++;
-    }
+    cleanupPromises.push((async () => {
+      process.stdout.write(`  ${c.blue}[D1]${c.reset} ${tag(d1.env)} ${d1.name} ... `);
+      const success = await cleanD1Database(d1);
+      if (success) {
+        console.log(`${c.green}CLEANED${c.reset}`);
+        successCount++;
+      } else {
+        console.log(`${c.red}FAILED${c.reset}`);
+        failCount++;
+      }
+    })());
   }
 
   for (const r2 of selection.r2ToClean) {
-    process.stdout.write(`  ${c.magenta}[R2]${c.reset} ${tag(r2.env)} ${r2.name} ... `);
-    const result = await cleanR2Bucket(r2);
-    if (result.success) {
-      console.log(`${c.green}CLEANED${c.reset}`);
-      successCount++;
-    } else {
-      console.log(`${c.red}FAILED${c.reset}`);
-      failCount++;
-    }
+    cleanupPromises.push((async () => {
+      process.stdout.write(`  ${c.magenta}[R2]${c.reset} ${tag(r2.env)} ${r2.name} ... `);
+      const result = await cleanR2Bucket(r2);
+      if (result.success) {
+        console.log(`${c.green}CLEANED${c.reset}`);
+        successCount++;
+      } else {
+        console.log(`${c.red}FAILED${c.reset}`);
+        failCount++;
+      }
+    })());
   }
+
+  // Wait for all cleanup operations to complete
+  await Promise.all(cleanupPromises);
 
   log.info(`\n${c.bold}${"─".repeat(40)}${c.reset}`);
   const summary = `  ${c.green}✓ Success: ${successCount}${c.reset}  ${c.red}✗ Failed: ${failCount}${c.reset}`;

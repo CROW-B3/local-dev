@@ -7,6 +7,31 @@ export type PackageManager = "bun" | "pnpm" | "yarn" | "npm" | "none";
 // Cache for package manager detection to avoid redundant filesystem checks
 const pmCache = new Map<string, PackageManager>();
 
+// Concurrency queue to limit parallel operations
+export const withConcurrency = async <T>(
+  tasks: (() => Promise<T>)[],
+  limit: number = 5
+): Promise<T[]> => {
+  const results: T[] = [];
+  const executing: Promise<void>[] = [];
+
+  for (const task of tasks) {
+    const promise = Promise.resolve().then(task).then(result => {
+      results.push(result);
+    });
+
+    executing.push(promise);
+
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+      executing.splice(executing.findIndex(p => p === promise), 1);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+};
+
 export const colors = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -89,8 +114,14 @@ export interface GitInfo {
 
 export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
   try {
-    // Get current branch and check for changes in one git call
-    const statusResult = await $`git -C ${repoPath} status --porcelain --branch`.quiet().nothrow();
+    // Run all git operations in parallel instead of sequential
+    const [statusResult, remoteResult, symbolicResult] = await Promise.all([
+      $`git -C ${repoPath} status --porcelain --branch`.quiet().nothrow(),
+      $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow(),
+      $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`.quiet().nothrow(),
+    ]);
+
+    // Parse status output for current branch and changes
     const statusOutput = statusResult.stdout.toString();
     const lines = statusOutput.split('\n');
 
@@ -108,19 +139,13 @@ export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
     }
 
     // Check if remote is empty
-    const remoteResult = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
     const remoteEmpty = remoteResult.exitCode !== 0 || remoteResult.stdout.toString().trim().length === 0;
 
-    // Get default branch
+    // Get default branch from symbolic ref
     let defaultBranch = "main";
-    try {
-      const symbolicResult = await $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`.quiet().nothrow();
-      if (symbolicResult.exitCode === 0) {
-        const output = symbolicResult.stdout.toString().trim();
-        defaultBranch = output.replace("refs/remotes/origin/", "");
-      }
-    } catch {
-      defaultBranch = "main";
+    if (symbolicResult.exitCode === 0) {
+      const output = symbolicResult.stdout.toString().trim();
+      defaultBranch = output.replace("refs/remotes/origin/", "");
     }
 
     return {
