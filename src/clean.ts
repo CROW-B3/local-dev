@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun";
+import { writeFile } from "fs/promises";
 import { search, select, confirm, input } from "@inquirer/prompts";
 import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
-import { colors as c } from "./utils";
+import { colors as c, log } from "./utils";
 
 type ResourceType = "d1" | "r2" | "both";
-type Environment = "production" | "dev" | "both";
+type Environment = "production" | "dev" | "local" | "both";
 
 interface CleanupSelection {
   service: ServiceResources;
@@ -18,7 +19,7 @@ interface CleanupSelection {
 
 const banner = () => {
   console.clear();
-  console.log(`
+  log.info(`
 ${c.red}${c.bold}  _____ _      ______          _   _ _    _ _____
 ${c.red} / ____| |    |  ____|   /\\   | \\ | | |  | |  __ \\
 ${c.red}| |    | |    | |__     /  \\  |  \\| | |  | | |__) |
@@ -28,13 +29,13 @@ ${c.green} \\_____|______|______/_/    \\_\\_| \\_|\\____/|_|
 ${c.reset}
 ${c.dim}  Cloudflare D1 & R2 Resource Cleanup Tool${c.reset}
 ${c.dim}  ─────────────────────────────────────────${c.reset}
-`);
+  `);
 };
 
-const tag = (env: "production" | "dev"): string => {
-  return env === "production"
-    ? `${c.red}[PROD]${c.reset}`
-    : `${c.yellow}[DEV]${c.reset}`;
+const tag = (env: "production" | "dev" | "local"): string => {
+  if (env === "production") return `${c.red}[PROD]${c.reset}`;
+  if (env === "dev") return `${c.yellow}[DEV]${c.reset}`;
+  return `${c.cyan}[LOCAL]${c.reset}`;
 };
 
 const selectService = async (): Promise<ServiceResources> => {
@@ -88,7 +89,7 @@ const selectEnvironment = async (
   service: ServiceResources,
   resourceType: ResourceType
 ): Promise<Environment> => {
-  const getResources = (env: "production" | "dev") => {
+  const getResources = (env: "production" | "dev" | "local") => {
     const items: string[] = [];
     if (resourceType === "d1" || resourceType === "both") {
       items.push(...service.d1.filter(d => d.env === env).map(d => `${c.blue}D1${c.reset} ${d.name}`));
@@ -114,6 +115,11 @@ const selectEnvironment = async (
     message: "Which environment?",
     choices: [
       {
+        name: `${c.cyan}[LOCAL]${c.reset} only ${c.dim}(safest)${c.reset}`,
+        value: "local" as const,
+        description: getResources("local"),
+      },
+      {
         name: `${c.yellow}[DEV]${c.reset} only ${c.dim}(safe)${c.reset}`,
         value: "dev" as const,
         description: getResources("dev"),
@@ -137,7 +143,7 @@ const getResourcesToClean = (
   resourceType: ResourceType,
   environment: Environment
 ): { d1: D1Resource[]; r2: R2Resource[] } => {
-  const envFilter = (env: "production" | "dev") =>
+  const envFilter = (env: "production" | "dev" | "local") =>
     environment === "both" || environment === env;
 
   const d1 = (resourceType === "d1" || resourceType === "both")
@@ -152,35 +158,35 @@ const getResourcesToClean = (
 };
 
 const printConfirmation = (selection: CleanupSelection): void => {
-  console.log(`\n${c.bold}${c.yellow}${"═".repeat(50)}${c.reset}`);
-  console.log(`${c.bold}${c.yellow}  CLEANUP CONFIRMATION${c.reset}`);
-  console.log(`${c.bold}${c.yellow}${"═".repeat(50)}${c.reset}\n`);
+  log.info(`\n${c.bold}${c.yellow}${"═".repeat(50)}${c.reset}`);
+  log.info(`${c.bold}${c.yellow}  CLEANUP CONFIRMATION${c.reset}`);
+  log.info(`${c.bold}${c.yellow}${"═".repeat(50)}${c.reset}\n`);
 
-  console.log(`${c.bold}Service:${c.reset}     ${c.cyan}${selection.service.service}${c.reset}`);
-  console.log(`${c.bold}Description:${c.reset} ${selection.service.displayName}`);
-  console.log(`${c.bold}Environment:${c.reset} ${selection.environment === "both" ? `${c.red}PROD + DEV${c.reset}` : selection.environment === "production" ? `${c.red}PROD${c.reset}` : `${c.yellow}DEV${c.reset}`}`);
-  console.log();
+  log.info(`${c.bold}Service:${c.reset}     ${c.cyan}${selection.service.service}${c.reset}`);
+  log.info(`${c.bold}Description:${c.reset} ${selection.service.displayName}`);
+  log.info(`${c.bold}Environment:${c.reset} ${selection.environment === "both" ? `${c.red}PROD + DEV${c.reset}` : selection.environment === "production" ? `${c.red}PROD${c.reset}` : `${c.yellow}DEV${c.reset}`}`);
+  log.info("");
 
   if (selection.d1ToClean.length > 0) {
-    console.log(`${c.blue}${c.bold}D1 Databases to wipe:${c.reset}`);
+    log.info(`${c.blue}${c.bold}D1 Databases to wipe:${c.reset}`);
     for (const d1 of selection.d1ToClean) {
-      console.log(`  ${tag(d1.env)} ${d1.name}`);
-      console.log(`  ${c.dim}└─ ID: ${d1.id}${c.reset}`);
+      log.info(`  ${tag(d1.env)} ${d1.name}`);
+      log.info(`  ${c.dim}└─ ID: ${d1.id}${c.reset}`);
     }
-    console.log();
+    log.info("");
   }
 
   if (selection.r2ToClean.length > 0) {
-    console.log(`${c.magenta}${c.bold}R2 Buckets to empty:${c.reset}`);
+    log.info(`${c.magenta}${c.bold}R2 Buckets to empty:${c.reset}`);
     for (const r2 of selection.r2ToClean) {
-      console.log(`  ${tag(r2.env)} ${r2.name}`);
+      log.info(`  ${tag(r2.env)} ${r2.name}`);
     }
-    console.log();
+    log.info("");
   }
 
   const hasProd = [...selection.d1ToClean, ...selection.r2ToClean].some(r => r.env === "production");
   if (hasProd) {
-    console.log(`${c.bgRed}${c.bold} ⚠ WARNING: This includes PRODUCTION resources! ${c.reset}\n`);
+    log.warn(`⚠ WARNING: This includes PRODUCTION resources!\n`);
   }
 };
 
@@ -189,7 +195,7 @@ const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
     const tablesResult = await $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
 
     if (tablesResult.exitCode !== 0) {
-      console.log(`\n${c.red}D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}${c.reset}`);
+      log.error(`D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}`);
       return false;
     }
 
@@ -209,18 +215,55 @@ const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
       return true;
     }
 
-    for (const table of tables) {
-      await $`bunx wrangler d1 execute ${d1.name} --remote --command "DROP TABLE IF EXISTS ${table};" --json`.quiet().nothrow();
-    }
+    // Create a single SQL file with all commands to ensure they execute in the same session
+    const deleteStatements = tables.map(table => `DELETE FROM ${table};`).join("\n");
+    const cleanupSQL = `PRAGMA foreign_keys = OFF;
+${deleteStatements}
+PRAGMA foreign_keys = ON;`;
 
-    return true;
+    const tempFileName = `.cleanup_${d1.id}_${Date.now()}.sql`;
+    await writeFile(tempFileName, cleanupSQL);
+
+    try {
+      // Execute the SQL file - this keeps all commands in the same session
+      const cleanupResult = await $`bunx wrangler d1 execute ${d1.name} --remote --file ${tempFileName} --json`.quiet().nothrow();
+
+      if (cleanupResult.exitCode !== 0) {
+        const errorOutput = cleanupResult.stderr.toString() || cleanupResult.stdout.toString();
+        log.error(`Failed to clean database: ${errorOutput}`);
+        return false;
+      }
+
+      // Verify that all tables are actually empty
+      let allEmpty = true;
+      for (const table of tables) {
+        const countResult = await $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT COUNT(*) as cnt FROM ${table};" --json`.quiet().nothrow();
+
+        if (countResult.exitCode === 0) {
+          try {
+            const parsed = JSON.parse(countResult.stdout.toString());
+            if (Array.isArray(parsed) && parsed[0]?.results?.[0]?.cnt > 0) {
+              log.error(`Table ${table} still has ${parsed[0].results[0].cnt} rows after cleanup`);
+              allEmpty = false;
+            }
+          } catch {
+            // Continue verification
+          }
+        }
+      }
+
+      return allEmpty;
+    } finally {
+      // Clean up temp file
+      await $`rm ${tempFileName}`.quiet().nothrow();
+    }
   } catch {
     return false;
   }
 };
 
-const CLOUDFLARE_API_TOKEN = "45kkzhpOUI74XMpwlD8R3mtePSfsBG7yo1mhPEcH";
-const CLOUDFLARE_ACCOUNT_ID = "8f0203259905d8923687286c84921e6c";
+const CLOUDFLARE_API_TOKEN = Bun.env['CLOUDFLARE_API_TOKEN'] || "";
+const CLOUDFLARE_ACCOUNT_ID = Bun.env['CLOUDFLARE_ACCOUNT_ID'] || "";
 
 type CleanResult = { success: boolean; count?: number };
 
@@ -240,7 +283,7 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
         return { success: true, count: 0 };
       }
       const errText = await listResponse.text();
-      console.log(`\n${c.red}R2 API Error (${listResponse.status}): ${errText}${c.reset}`);
+      log.error(`R2 API Error (${listResponse.status}): ${errText}`);
       return { success: false };
     }
 
@@ -263,7 +306,7 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
 };
 
 const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
-  console.log(`\n${c.bold}Starting cleanup...${c.reset}\n`);
+  log.info(`\nStarting cleanup...\n`);
 
   let successCount = 0;
   let failCount = 0;
@@ -292,10 +335,10 @@ const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
     }
   }
 
-  console.log(`\n${c.bold}${"─".repeat(40)}${c.reset}`);
+  log.info(`\n${c.bold}${"─".repeat(40)}${c.reset}`);
   const summary = `  ${c.green}✓ Success: ${successCount}${c.reset}  ${c.red}✗ Failed: ${failCount}${c.reset}`;
-  console.log(summary);
-  console.log(`${c.bold}${"─".repeat(40)}${c.reset}\n`);
+  log.info(summary);
+  log.info(`${c.bold}${"─".repeat(40)}${c.reset}\n`);
 };
 
 const main = async () => {
@@ -318,7 +361,7 @@ const main = async () => {
     const { d1, r2 } = getResourcesToClean(service, resourceType, environment);
 
     if (d1.length === 0 && r2.length === 0) {
-      console.log(`\n${c.yellow}No resources found. Exiting.${c.reset}\n`);
+      log.warn(`No resources found. Exiting.\n`);
       process.exit(0);
     }
 
@@ -341,7 +384,7 @@ const main = async () => {
         message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
       });
       if (typed !== "DELETE") {
-        console.log(`\n${c.yellow}Aborted.${c.reset}\n`);
+        log.warn(`Aborted.\n`);
         process.exit(0);
       }
     } else {
@@ -350,7 +393,7 @@ const main = async () => {
         default: false
       });
       if (!confirmed) {
-        console.log(`\n${c.yellow}Aborted.${c.reset}\n`);
+        log.warn(`Aborted.\n`);
         process.exit(0);
       }
     }
@@ -358,10 +401,10 @@ const main = async () => {
     // Step 7: Execute cleanup
     await executeCleanup(selection);
 
-    console.log(`${c.green}${c.bold}Cleanup complete!${c.reset}\n`);
+    log.success(`Cleanup complete!\n`);
   } catch (err) {
     if ((err as Error).name === "ExitPromptError") {
-      console.log(`\n${c.yellow}Cancelled.${c.reset}\n`);
+      log.warn(`Cancelled.\n`);
       process.exit(0);
     }
     throw err;
@@ -369,6 +412,6 @@ const main = async () => {
 };
 
 main().catch((err) => {
-  console.error(`${c.red}Error: ${err.message}${c.reset}`);
+  log.error(`Error: ${err.message}`);
   process.exit(1);
 });
