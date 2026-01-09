@@ -4,6 +4,9 @@ import { join } from "path";
 
 export type PackageManager = "bun" | "pnpm" | "yarn" | "npm" | "none";
 
+// Cache for package manager detection to avoid redundant filesystem checks
+const pmCache = new Map<string, PackageManager>();
+
 export const colors = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -76,6 +79,66 @@ export const isRemoteEmpty = async (repoPath: string): Promise<boolean> => {
   }
 };
 
+// Combined git info retrieval to reduce process spawning
+export interface GitInfo {
+  currentBranch: string;
+  hasChanges: boolean;
+  isRemoteEmpty: boolean;
+  defaultBranch: string;
+}
+
+export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
+  try {
+    // Get current branch and check for changes in one git call
+    const statusResult = await $`git -C ${repoPath} status --porcelain --branch`.quiet().nothrow();
+    const statusOutput = statusResult.stdout.toString();
+    const lines = statusOutput.split('\n');
+
+    let currentBranch = "unknown";
+    let hasChanges = false;
+
+    // First line contains branch info: ## branch-name...tracking
+    if (lines[0]) {
+      const branchMatch = lines[0].match(/^## ([^\s.]+)/);
+      if (branchMatch) {
+        currentBranch = branchMatch[1];
+      }
+      // Any output after first line means there are changes
+      hasChanges = lines.slice(1).some(line => line.trim().length > 0);
+    }
+
+    // Check if remote is empty
+    const remoteResult = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
+    const remoteEmpty = remoteResult.exitCode !== 0 || remoteResult.stdout.toString().trim().length === 0;
+
+    // Get default branch
+    let defaultBranch = "main";
+    try {
+      const symbolicResult = await $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`.quiet().nothrow();
+      if (symbolicResult.exitCode === 0) {
+        const output = symbolicResult.stdout.toString().trim();
+        defaultBranch = output.replace("refs/remotes/origin/", "");
+      }
+    } catch {
+      defaultBranch = "main";
+    }
+
+    return {
+      currentBranch,
+      hasChanges,
+      isRemoteEmpty: remoteEmpty,
+      defaultBranch,
+    };
+  } catch {
+    return {
+      currentBranch: "unknown",
+      hasChanges: false,
+      isRemoteEmpty: true,
+      defaultBranch: "main",
+    };
+  }
+};
+
 export const cloneRepo = async (repoUrl: string, targetPath: string): Promise<boolean> => {
   try {
     const result = await $`git clone ${repoUrl} ${targetPath}`.nothrow();
@@ -113,12 +176,29 @@ export const fetchRemote = async (repoPath: string): Promise<boolean> => {
 };
 
 export const detectPackageManager = (repoPath: string): PackageManager => {
-  if (existsSync(join(repoPath, "bun.lockb")) || existsSync(join(repoPath, "bun.lock"))) return "bun";
-  if (existsSync(join(repoPath, "pnpm-lock.yaml"))) return "pnpm";
-  if (existsSync(join(repoPath, "yarn.lock"))) return "yarn";
-  if (existsSync(join(repoPath, "package-lock.json"))) return "npm";
-  if (existsSync(join(repoPath, "package.json"))) return "bun";
-  return "none";
+  // Return cached result if available
+  if (pmCache.has(repoPath)) {
+    return pmCache.get(repoPath)!;
+  }
+
+  let pm: PackageManager;
+  if (existsSync(join(repoPath, "bun.lockb")) || existsSync(join(repoPath, "bun.lock"))) {
+    pm = "bun";
+  } else if (existsSync(join(repoPath, "pnpm-lock.yaml"))) {
+    pm = "pnpm";
+  } else if (existsSync(join(repoPath, "yarn.lock"))) {
+    pm = "yarn";
+  } else if (existsSync(join(repoPath, "package-lock.json"))) {
+    pm = "npm";
+  } else if (existsSync(join(repoPath, "package.json"))) {
+    pm = "bun";
+  } else {
+    pm = "none";
+  }
+
+  // Cache the result
+  pmCache.set(repoPath, pm);
+  return pm;
 };
 
 export const runInstall = async (repoPath: string): Promise<boolean> => {

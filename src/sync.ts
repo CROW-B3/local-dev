@@ -9,13 +9,10 @@ import {
   colors,
   detectPackageManager,
   fetchRemote,
-  getCurrentBranch,
-  getDefaultBranch,
+  getGitInfo,
   getRepoPath,
   getWorkspaceRoot,
-  hasUncommittedChanges,
   initializeHusky,
-  isRemoteEmpty,
   log,
   printHeader,
   printSummary,
@@ -39,28 +36,27 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
     return { name: repoName, success: false, skipped: true, reason: "Not cloned" };
   }
 
-  const hasChanges = await hasUncommittedChanges(repoPath);
-  const currentBranch = await getCurrentBranch(repoPath);
+  // Get all git info in consolidated call
+  const gitInfo = await getGitInfo(repoPath);
 
-  if (hasChanges && !force) {
-    return { name: repoName, success: false, skipped: true, reason: `Dirty (${currentBranch})` };
+  if (gitInfo.hasChanges && !force) {
+    return { name: repoName, success: false, skipped: true, reason: `Dirty (${gitInfo.currentBranch})` };
   }
 
-  if (hasChanges && force) {
+  if (gitInfo.hasChanges && force) {
     await $`git -C ${repoPath} stash push -m "local-dev sync"`.quiet().nothrow();
   }
 
   await fetchRemote(repoPath);
 
-  if (await isRemoteEmpty(repoPath)) {
+  if (gitInfo.isRemoteEmpty) {
     return { name: repoName, success: false, skipped: true, reason: "Remote is empty" };
   }
 
-  const defaultBranch = await getDefaultBranch(repoPath);
-  if (currentBranch !== defaultBranch) {
-    const checkoutSuccess = await checkoutBranch(repoPath, defaultBranch);
+  if (gitInfo.currentBranch !== gitInfo.defaultBranch) {
+    const checkoutSuccess = await checkoutBranch(repoPath, gitInfo.defaultBranch);
     if (!checkoutSuccess) {
-      return { name: repoName, success: false, skipped: false, reason: `Checkout ${defaultBranch} failed` };
+      return { name: repoName, success: false, skipped: false, reason: `Checkout ${gitInfo.defaultBranch} failed` };
     }
   }
 
@@ -143,7 +139,8 @@ const main = async () => {
 
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
-  for (const repo of repos) {
+  // Sync repos in parallel for better performance
+  const syncPromises = repos.map(async (repo) => {
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
     const result = await syncRepo(repo.name, argv.force);
@@ -158,7 +155,11 @@ const main = async () => {
       console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
       results.failed.push(repo.name);
     }
-  }
+
+    return result;
+  });
+
+  await Promise.all(syncPromises);
 
   printSummary(results);
   if (results.failed.length > 0) process.exit(1);

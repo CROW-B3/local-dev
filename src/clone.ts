@@ -108,7 +108,8 @@ const main = async () => {
 
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
 
-  for (const repo of repos) {
+  // Clone repos in parallel for better performance
+  const clonePromises = repos.map(async (repo) => {
     const repoUrl = getRepoUrl(repo.name);
     process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
 
@@ -124,7 +125,11 @@ const main = async () => {
       console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
       results.failed.push(repo.name);
     }
-  }
+
+    return result;
+  });
+
+  await Promise.all(clonePromises);
 
   printSummary(results);
   if (results.failed.length > 0) process.exit(1);
