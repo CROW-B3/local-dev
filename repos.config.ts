@@ -34,6 +34,7 @@ export const REPOS: RepoConfig[] = [
 
   // Supporting Services
   { name: "bff-chat-service", description: "Chat BFF", category: "supporting-service", cloneByDefault: true, isPrivate: true },
+  { name: "bff-qna-service", description: "QnA BFF", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "mcp-service", description: "MCP Server", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "a2a-service", description: "A2A Service", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "web-ingest-service", description: "Web Ingest", category: "supporting-service", cloneByDefault: true, isPrivate: true },
@@ -51,6 +52,7 @@ export const REPOS: RepoConfig[] = [
   // Docs
   { name: "internal-docs", description: "Internal Docs", category: "docs", cloneByDefault: true, isPrivate: true },
   { name: "public-docs", description: "Public Docs", category: "docs", cloneByDefault: true, isPrivate: false },
+  { name: "blog.crowai.dev", description: "Engineering Blog", category: "docs", cloneByDefault: true, isPrivate: false },
 
   // Infrastructure
   { name: "infrastructure", description: "K8s Infra", category: "infrastructure", cloneByDefault: true, isPrivate: true },
