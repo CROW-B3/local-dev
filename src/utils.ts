@@ -15,36 +15,45 @@ const pmCache = new Map<string, PackageManager>();
 // Concurrency queue to limit parallel operations
 export const withConcurrency = async <T>(
   tasks: (() => Promise<T>)[],
-  limit: number = 5
+  limit: number = 5,
 ): Promise<T[]> => {
   const results: T[] = [];
-  const executing: Set<{ resolve: (value: T) => void, reject: (error: any) => void, promise: Promise<void> }> = new Set();
+  const executing: Set<{
+    resolve: (value: T) => void;
+    reject: (error: any) => void;
+    promise: Promise<void>;
+  }> = new Set();
 
   const executeTask = (task: () => Promise<T>, index: number): Promise<T> => {
     return new Promise<T>((resolve, reject) => {
-      const wrapper = Promise.resolve().then(task).then(result => {
-        results.push(result);
-        resolve(result);
-      }).catch(reject);
+      const wrapper = Promise.resolve()
+        .then(task)
+        .then((result) => {
+          results.push(result);
+          resolve(result);
+        })
+        .catch(reject);
 
       // Wait for this task to complete before resolving the wrapper
-      wrapper.then(() => {
-        // Find and remove this task from executing set
-        for (const item of executing) {
-          if (item.promise === wrapper) {
-            executing.delete(item);
-            break;
+      wrapper
+        .then(() => {
+          // Find and remove this task from executing set
+          for (const item of executing) {
+            if (item.promise === wrapper) {
+              executing.delete(item);
+              break;
+            }
           }
-        }
-      }).catch(() => {
-        // Also remove on error
-        for (const item of executing) {
-          if (item.promise === wrapper) {
-            executing.delete(item);
-            break;
+        })
+        .catch(() => {
+          // Also remove on error
+          for (const item of executing) {
+            if (item.promise === wrapper) {
+              executing.delete(item);
+              break;
+            }
           }
-        }
-      });
+        });
 
       const promiseWrapper = wrapper as Promise<void>;
       executing.add({ resolve, reject, promise: promiseWrapper });
@@ -55,16 +64,16 @@ export const withConcurrency = async <T>(
   for (let i = 0; i < tasks.length; i++) {
     // If we've reached the limit, wait for one to finish before starting the next
     if (executing.size >= limit) {
-      await Promise.race(Array.from(executing).map(item => item.promise));
+      await Promise.race(Array.from(executing).map((item) => item.promise));
     }
-    
+
     // Start the next task
     executeTask(tasks[i], i);
   }
 
   // Wait for all remaining tasks to complete
-  await Promise.all(Array.from(executing).map(item => item.promise));
-  
+  await Promise.all(Array.from(executing).map((item) => item.promise));
+
   return results;
 };
 
@@ -84,17 +93,24 @@ export const colors = {
 };
 
 export const log = {
-  info: (msg: string) => console.log(`${colors.blue}[INFO]${colors.reset} ${msg}`),
-  success: (msg: string) => console.log(`${colors.green}[OK]${colors.reset} ${msg}`),
-  warn: (msg: string) => console.log(`${colors.yellow}[WARN]${colors.reset} ${msg}`),
-  error: (msg: string) => console.log(`${colors.red}[ERROR]${colors.reset} ${msg}`),
+  info: (msg: string) =>
+    console.log(`${colors.blue}[INFO]${colors.reset} ${msg}`),
+  success: (msg: string) =>
+    console.log(`${colors.green}[OK]${colors.reset} ${msg}`),
+  warn: (msg: string) =>
+    console.log(`${colors.yellow}[WARN]${colors.reset} ${msg}`),
+  error: (msg: string) =>
+    console.log(`${colors.red}[ERROR]${colors.reset} ${msg}`),
   dim: (msg: string) => console.log(`${colors.dim}${msg}${colors.reset}`),
 };
 
 export const symbols = { success: "+", error: "x", warning: "!", arrow: ">" };
 
 // Progress output utilities for aligned status displays
-export const formatProgressLine = (status: string, repoName: string): string => {
+export const formatProgressLine = (
+  status: string,
+  repoName: string,
+): string => {
   return `${status}  ${repoName}`;
 };
 
@@ -115,7 +131,11 @@ export class ProgressDisplay {
   private linePosition: number = 0;
   private hasWrittenLine: boolean = false;
 
-  async init(text: string, repoName: string = "", linePosition: number = 0): Promise<void> {
+  async init(
+    text: string,
+    repoName: string = "",
+    linePosition: number = 0,
+  ): Promise<void> {
     this.repoName = repoName;
     this.startTime = Date.now();
     this.linePosition = linePosition;
@@ -124,12 +144,17 @@ export class ProgressDisplay {
     await this.queue;
   }
 
-  async update(status: string, step?: string, progress?: number): Promise<void> {
+  async update(
+    status: string,
+    step?: string,
+    progress?: number,
+  ): Promise<void> {
     if (!this.isActive) return;
-    
+
     await this.queue;
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
-    const progressStr = progress !== undefined ? ` ${Math.round(progress * 100)}%` : "";
+    const progressStr =
+      progress !== undefined ? ` ${Math.round(progress * 100)}%` : "";
     const stepStr = step ? ` ${colors.dim}[${step}]${colors.reset}` : "";
     const timeStr = `${colors.dim}(${elapsed}s)${colors.reset}`;
     const text = `\r\x1b[K${status}${stepStr}${progressStr} ${timeStr}`;
@@ -137,23 +162,29 @@ export class ProgressDisplay {
     await this.queue;
   }
 
-  async updateWithRepo(repoName: string, status: string, step?: string, progress?: number): Promise<void> {
+  async updateWithRepo(
+    repoName: string,
+    status: string,
+    step?: string,
+    progress?: number,
+  ): Promise<void> {
     if (!this.isActive) return;
-    
+
     await this.queue;
-    
+
     // Only write newline once when we first start updating this repo
     if (!this.hasWrittenLine) {
       this.queue = writeAsync(`\n`);
       this.hasWrittenLine = true;
       await this.queue;
     }
-    
+
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
-    const progressStr = progress !== undefined ? ` ${Math.round(progress * 100)}%` : "";
+    const progressStr =
+      progress !== undefined ? ` ${Math.round(progress * 100)}%` : "";
     const stepStr = step ? ` ${colors.dim}[${step}]${colors.reset}` : "";
     const timeStr = `${colors.dim}(${elapsed}s)${colors.reset}`;
-    
+
     // Pad repo name for alignment
     const paddedRepoName = repoName.padEnd(30);
     const text = `\r\x1b[K${status}  ${paddedRepoName}${stepStr}${progressStr} ${timeStr}`;
@@ -161,16 +192,20 @@ export class ProgressDisplay {
     await this.queue;
   }
 
-  async finalize(status: string, repoName: string = "", success: boolean = true): Promise<void> {
+  async finalize(
+    status: string,
+    repoName: string = "",
+    success: boolean = true,
+  ): Promise<void> {
     if (!this.isActive) return;
-    
+
     await this.queue;
     this.isActive = false;
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
     const timeStr = `${colors.dim}(${elapsed}s)${colors.reset}`;
     const finalRepoName = repoName || this.repoName;
     const paddedRepoName = finalRepoName.padEnd(30);
-    
+
     // If we never wrote a line for this repo, write it now
     if (!this.hasWrittenLine) {
       const text = `\n\r\x1b[K${status}  ${paddedRepoName} ${timeStr}\n`;
@@ -179,7 +214,7 @@ export class ProgressDisplay {
       const text = `\r\x1b[K${status}  ${paddedRepoName} ${timeStr}\n`;
       this.queue = writeAsync(text);
     }
-    
+
     await this.queue;
   }
 
@@ -209,13 +244,20 @@ export const flushWrites = (): Promise<void> => {
 };
 
 export const getWorkspaceRoot = (): string => join(process.cwd(), "..");
-export const getRepoPath = (repoName: string): string => join(getWorkspaceRoot(), repoName);
-export const dirExists = (repoName: string): boolean => existsSync(getRepoPath(repoName));
-export const repoExists = (repoName: string): boolean => existsSync(join(getRepoPath(repoName), ".git"));
+export const getRepoPath = (repoName: string): string =>
+  join(getWorkspaceRoot(), repoName);
+export const dirExists = (repoName: string): boolean =>
+  existsSync(getRepoPath(repoName));
+export const repoExists = (repoName: string): boolean =>
+  existsSync(join(getRepoPath(repoName), ".git"));
 
-export const hasUncommittedChanges = async (repoPath: string): Promise<boolean> => {
+export const hasUncommittedChanges = async (
+  repoPath: string,
+): Promise<boolean> => {
   try {
-    const result = await $`git -C ${repoPath} status --porcelain`.quiet().nothrow();
+    const result = await $`git -C ${repoPath} status --porcelain`
+      .quiet()
+      .nothrow();
     return result.stdout.toString().trim().length > 0;
   } catch {
     return false;
@@ -224,7 +266,9 @@ export const hasUncommittedChanges = async (repoPath: string): Promise<boolean> 
 
 export const getCurrentBranch = async (repoPath: string): Promise<string> => {
   try {
-    const result = await $`git -C ${repoPath} branch --show-current`.quiet().nothrow();
+    const result = await $`git -C ${repoPath} branch --show-current`
+      .quiet()
+      .nothrow();
     return result.stdout.toString().trim() || "unknown";
   } catch {
     return "unknown";
@@ -233,13 +277,18 @@ export const getCurrentBranch = async (repoPath: string): Promise<string> => {
 
 export const getDefaultBranch = async (repoPath: string): Promise<string> => {
   try {
-    const result = await $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`.quiet().nothrow();
+    const result =
+      await $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`
+        .quiet()
+        .nothrow();
     const output = result.stdout.toString().trim();
     if (output) return output.replace("refs/remotes/origin/", "");
   } catch {}
 
   try {
-    const result = await $`git -C ${repoPath} rev-parse --verify main`.quiet().nothrow();
+    const result = await $`git -C ${repoPath} rev-parse --verify main`
+      .quiet()
+      .nothrow();
     if (result.exitCode === 0) return "main";
   } catch {}
 
@@ -248,8 +297,12 @@ export const getDefaultBranch = async (repoPath: string): Promise<string> => {
 
 export const isRemoteEmpty = async (repoPath: string): Promise<boolean> => {
   try {
-    const result = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
-    return result.exitCode !== 0 || result.stdout.toString().trim().length === 0;
+    const result = await $`git -C ${repoPath} ls-remote --heads origin`
+      .quiet()
+      .nothrow();
+    return (
+      result.exitCode !== 0 || result.stdout.toString().trim().length === 0
+    );
   } catch {
     return true;
   }
@@ -269,12 +322,14 @@ export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
     const [statusResult, remoteResult, symbolicResult] = await Promise.all([
       $`git -C ${repoPath} status --porcelain --branch`.quiet().nothrow(),
       $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow(),
-      $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`.quiet().nothrow(),
+      $`git -C ${repoPath} symbolic-ref refs/remotes/origin/HEAD`
+        .quiet()
+        .nothrow(),
     ]);
 
     // Parse status output for current branch and changes
     const statusOutput = statusResult.stdout.toString();
-    const lines = statusOutput.split('\n');
+    const lines = statusOutput.split("\n");
 
     let currentBranch = "unknown";
     let hasChanges = false;
@@ -286,11 +341,13 @@ export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
         currentBranch = branchMatch[1];
       }
       // Any output after first line means there are changes
-      hasChanges = lines.slice(1).some(line => line.trim().length > 0);
+      hasChanges = lines.slice(1).some((line) => line.trim().length > 0);
     }
 
     // Check if remote is empty
-    const remoteEmpty = remoteResult.exitCode !== 0 || remoteResult.stdout.toString().trim().length === 0;
+    const remoteEmpty =
+      remoteResult.exitCode !== 0 ||
+      remoteResult.stdout.toString().trim().length === 0;
 
     // Get default branch from symbolic ref
     let defaultBranch = "main";
@@ -315,20 +372,31 @@ export const getGitInfo = async (repoPath: string): Promise<GitInfo> => {
   }
 };
 
-export const cloneRepo = async (repoUrl: string, targetPath: string): Promise<boolean> => {
+export const cloneRepo = async (
+  repoUrl: string,
+  targetPath: string,
+): Promise<boolean> => {
   try {
-    // Use --depth 1 for faster cloning of latest commit only
-    const result = await $`git clone --depth 1 ${repoUrl} ${targetPath}`.quiet().nothrow();
+    const result = await $`git clone ${repoUrl} ${targetPath}`
+      .quiet()
+      .nothrow();
     return result.exitCode === 0;
   } catch (error) {
-    log.error(`Clone error for ${repoUrl}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log.error(
+      `Clone error for ${repoUrl}: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
     return false;
   }
 };
 
-export const checkoutBranch = async (repoPath: string, branch: string): Promise<boolean> => {
+export const checkoutBranch = async (
+  repoPath: string,
+  branch: string,
+): Promise<boolean> => {
   try {
-    const result = await $`git -C ${repoPath} checkout ${branch}`.quiet().nothrow();
+    const result = await $`git -C ${repoPath} checkout ${branch}`
+      .quiet()
+      .nothrow();
     return result.exitCode === 0;
   } catch {
     return false;
@@ -360,7 +428,10 @@ export const detectPackageManager = (repoPath: string): PackageManager => {
   }
 
   let pm: PackageManager;
-  if (existsSync(join(repoPath, "bun.lockb")) || existsSync(join(repoPath, "bun.lock"))) {
+  if (
+    existsSync(join(repoPath, "bun.lockb")) ||
+    existsSync(join(repoPath, "bun.lock"))
+  ) {
     pm = "bun";
   } else if (existsSync(join(repoPath, "pnpm-lock.yaml"))) {
     pm = "pnpm";
@@ -403,12 +474,17 @@ export const runInstall = async (repoPath: string): Promise<boolean> => {
         npm: "npm install",
         none: "",
       };
-      const fallbackResult = await $`${{ raw: fallbackCommands[pm] }}`.cwd(repoPath).quiet().nothrow();
+      const fallbackResult = await $`${{ raw: fallbackCommands[pm] }}`
+        .cwd(repoPath)
+        .quiet()
+        .nothrow();
       return fallbackResult.exitCode === 0;
     }
     return true;
   } catch (error) {
-    log.error(`Install error for ${repoPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log.error(
+      `Install error for ${repoPath}: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
     return false;
   }
 };
@@ -430,7 +506,9 @@ export const initializeHusky = async (repoPath: string): Promise<boolean> => {
     const result = await $`bunx husky install`.cwd(repoPath).quiet().nothrow();
     return result.exitCode === 0;
   } catch (error) {
-    log.error(`Husky init error for ${repoPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log.error(
+      `Husky init error for ${repoPath}: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
     return false;
   }
 };
@@ -445,16 +523,22 @@ export const printSummary = (results: {
   console.log(`${colors.bold}${"─".repeat(40)}${colors.reset}`);
 
   if (results.success.length > 0) {
-    console.log(`${colors.green}${symbols.success} Success: ${results.success.length}${colors.reset}`);
+    console.log(
+      `${colors.green}${symbols.success} Success: ${results.success.length}${colors.reset}`,
+    );
   }
   if (results.skipped.length > 0) {
-    console.log(`${colors.yellow}${symbols.warning} Skipped: ${results.skipped.length}${colors.reset}`);
+    console.log(
+      `${colors.yellow}${symbols.warning} Skipped: ${results.skipped.length}${colors.reset}`,
+    );
     results.skipped.forEach(({ name, reason }) => {
       log.dim(`  ${name}: ${reason}`);
     });
   }
   if (results.failed.length > 0) {
-    console.log(`${colors.red}${symbols.error} Failed: ${results.failed.length}${colors.reset}`);
+    console.log(
+      `${colors.red}${symbols.error} Failed: ${results.failed.length}${colors.reset}`,
+    );
     results.failed.forEach(({ name, reason }) => {
       log.dim(`  ${name}: ${reason}`);
     });
@@ -482,7 +566,7 @@ export interface RetryOptions {
 // Advanced concurrency control with timeout and error handling
 export const withAdvancedConcurrency = async <T>(
   tasks: (() => Promise<T>)[],
-  options: ConcurrencyOptions
+  options: ConcurrencyOptions,
 ): Promise<T[]> => {
   const results: T[] = [];
   const executing: Set<Promise<void>> = new Set();
@@ -497,17 +581,21 @@ export const withAdvancedConcurrency = async <T>(
           taskPromise = Promise.race([
             taskPromise,
             new Promise<T>((_, reject) =>
-              setTimeout(() => reject(new Error(`Task timeout after ${options.timeout}ms`)), options.timeout)
+              setTimeout(
+                () =>
+                  reject(new Error(`Task timeout after ${options.timeout}ms`)),
+                options.timeout,
+              ),
             ),
           ]);
         }
 
         return taskPromise;
       })
-      .then(result => {
+      .then((result) => {
         results[i] = result;
       })
-      .catch(error => {
+      .catch((error) => {
         if (options.onError) {
           options.onError(error, i);
         }
@@ -531,8 +619,13 @@ export const withAdvancedConcurrency = async <T>(
 // Retry mechanism with exponential backoff
 export const withRetry = async <T>(
   operation: () => Promise<T>,
-  options: RetryOptions
-): Promise<{ success: boolean; result?: T; error?: Error; attempts: number }> => {
+  options: RetryOptions,
+): Promise<{
+  success: boolean;
+  result?: T;
+  error?: Error;
+  attempts: number;
+}> => {
   let lastError: Error | undefined;
   let delay = options.delayMs;
   const maxDelay = options.maxDelayMs || 30000;
@@ -545,7 +638,9 @@ export const withRetry = async <T>(
       lastError = err instanceof Error ? err : new Error(String(err));
 
       if (attempt < options.maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, Math.min(delay, maxDelay)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(delay, maxDelay)),
+        );
         delay *= options.backoffMultiplier;
       }
     }
@@ -556,7 +651,10 @@ export const withRetry = async <T>(
 
 // Performance monitoring and metrics collection
 export class PerformanceTracker {
-  private operations: Map<string, { startTime: number; endTime?: number; duration?: number }> = new Map();
+  private operations: Map<
+    string,
+    { startTime: number; endTime?: number; duration?: number }
+  > = new Map();
   private startTime: number = Date.now();
 
   startOperation(name: string): void {
@@ -585,7 +683,8 @@ export class PerformanceTracker {
     averageOperationTime: number;
   } {
     const totalTime = Date.now() - this.startTime;
-    const operations: Record<string, { duration: number; percentage: number }> = {};
+    const operations: Record<string, { duration: number; percentage: number }> =
+      {};
 
     for (const [name, op] of this.operations.entries()) {
       if (op.duration) {
@@ -597,9 +696,11 @@ export class PerformanceTracker {
     }
 
     const completedOps = Object.values(operations);
-    const averageOperationTime = completedOps.length > 0
-      ? completedOps.reduce((sum, op) => sum + op.duration, 0) / completedOps.length
-      : 0;
+    const averageOperationTime =
+      completedOps.length > 0
+        ? completedOps.reduce((sum, op) => sum + op.duration, 0) /
+          completedOps.length
+        : 0;
 
     return {
       totalTime,
@@ -615,7 +716,9 @@ export class PerformanceTracker {
     log.info(`\n${colors.bold}Performance Summary${colors.reset}`);
     log.info(`Total Time: ${(metrics.totalTime / 1000).toFixed(2)}s`);
     log.info(`Operations: ${metrics.operationCount}`);
-    log.info(`Average Per Op: ${(metrics.averageOperationTime / 1000).toFixed(2)}s\n`);
+    log.info(
+      `Average Per Op: ${(metrics.averageOperationTime / 1000).toFixed(2)}s\n`,
+    );
 
     const sorted = Object.entries(metrics.operations)
       .sort((a, b) => b[1].duration - a[1].duration)
@@ -625,7 +728,9 @@ export class PerformanceTracker {
       log.info(`Top Operations:`);
       sorted.forEach(([name, op]) => {
         const percentage = Math.round(op.percentage);
-        log.dim(`  ${name}: ${(op.duration / 1000).toFixed(2)}s (${percentage}%)`);
+        log.dim(
+          `  ${name}: ${(op.duration / 1000).toFixed(2)}s (${percentage}%)`,
+        );
       });
     }
   }
@@ -635,7 +740,7 @@ export class PerformanceTracker {
 export const processBatch = async <T, R>(
   items: T[],
   processor: (batch: T[]) => Promise<R[]>,
-  batchSize: number = 50
+  batchSize: number = 50,
 ): Promise<R[]> => {
   const results: R[] = [];
 
@@ -651,8 +756,8 @@ export const processBatch = async <T, R>(
 // Debounce utility for rate limiting operations
 export const debounce = <T extends any[], R>(
   fn: (...args: T) => Promise<R>,
-  delayMs: number
-): (...args: T) => Promise<R> => {
+  delayMs: number,
+): ((...args: T) => Promise<R>) => {
   let timeout: NodeJS.Timeout | null = null;
   let lastResult: Promise<R> | null = null;
 
@@ -705,7 +810,7 @@ export class RateLimiter {
       }
 
       const waitTime = ((tokensNeeded - this.tokens) / this.refillRate) * 1000;
-      await new Promise(resolve => setTimeout(resolve, Math.ceil(waitTime)));
+      await new Promise((resolve) => setTimeout(resolve, Math.ceil(waitTime)));
     }
   }
 }
@@ -714,12 +819,12 @@ export class RateLimiter {
 export const withTimeout = async <T>(
   promise: Promise<T>,
   timeoutMs: number,
-  errorMessage: string = "Operation timed out"
+  errorMessage: string = "Operation timed out",
 ): Promise<T> => {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs),
     ),
   ]);
 };
@@ -727,7 +832,7 @@ export const withTimeout = async <T>(
 // Chain multiple retryable operations
 export const chainWithRetry = async <T>(
   operations: Array<() => Promise<T>>,
-  retryOptions: RetryOptions
+  retryOptions: RetryOptions,
 ): Promise<T[]> => {
   const results: T[] = [];
 
@@ -765,7 +870,12 @@ export class AuditLogger {
     this.filename = filename;
   }
 
-  log(operation: string, resource: string, status: "success" | "failure" | "skipped", details?: Record<string, any>): void {
+  log(
+    operation: string,
+    resource: string,
+    status: "success" | "failure" | "skipped",
+    details?: Record<string, any>,
+  ): void {
     const entry: AuditLogEntry = {
       timestamp: Date.now(),
       operation,
@@ -783,21 +893,21 @@ export class AuditLogger {
         entries: this.entries,
         summary: {
           total: this.entries.length,
-          success: this.entries.filter(e => e.status === "success").length,
-          failures: this.entries.filter(e => e.status === "failure").length,
-          skipped: this.entries.filter(e => e.status === "skipped").length,
+          success: this.entries.filter((e) => e.status === "success").length,
+          failures: this.entries.filter((e) => e.status === "failure").length,
+          skipped: this.entries.filter((e) => e.status === "skipped").length,
         },
       },
       null,
-      2
+      2,
     );
   }
 
   getStats(): { success: number; failure: number; skipped: number } {
     return {
-      success: this.entries.filter(e => e.status === "success").length,
-      failure: this.entries.filter(e => e.status === "failure").length,
-      skipped: this.entries.filter(e => e.status === "skipped").length,
+      success: this.entries.filter((e) => e.status === "success").length,
+      failure: this.entries.filter((e) => e.status === "failure").length,
+      skipped: this.entries.filter((e) => e.status === "skipped").length,
     };
   }
 }
@@ -813,7 +923,9 @@ export const safetyValidator = {
   // Prevent dangerous operations
   isDangerousOperation: (operation: string, resource: string): boolean => {
     const dangerous = ["delete-all", "wipe-production", "drop-database"];
-    return dangerous.some(d => operation.toLowerCase().includes(d) && resource.includes("prod"));
+    return dangerous.some(
+      (d) => operation.toLowerCase().includes(d) && resource.includes("prod"),
+    );
   },
 
   // Validate resource names don't contain suspicious patterns
@@ -825,7 +937,10 @@ export const safetyValidator = {
       return { valid: false, error: "Resource name too long" };
     }
     if (!/^[a-zA-Z0-9_\-\.]+$/.test(name)) {
-      return { valid: false, error: "Resource name contains invalid characters" };
+      return {
+        valid: false,
+        error: "Resource name contains invalid characters",
+      };
     }
     return { valid: true };
   },
@@ -872,14 +987,27 @@ export const reportGenerator = {
 
     lines.push(`## Summary\n`);
     lines.push(`- **Total:** ${report.summary.total}`);
-    lines.push(`- **Succeeded:** ${colors.green}${report.summary.succeeded}${colors.reset}`);
-    lines.push(`- **Failed:** ${colors.red}${report.summary.failed}${colors.reset}`);
-    lines.push(`- **Skipped:** ${colors.yellow}${report.summary.skipped}${colors.reset}\n`);
+    lines.push(
+      `- **Succeeded:** ${colors.green}${report.summary.succeeded}${colors.reset}`,
+    );
+    lines.push(
+      `- **Failed:** ${colors.red}${report.summary.failed}${colors.reset}`,
+    );
+    lines.push(
+      `- **Skipped:** ${colors.yellow}${report.summary.skipped}${colors.reset}\n`,
+    );
 
     lines.push(`## Details\n`);
     for (const detail of report.details) {
-      const icon = detail.status === "success" ? "✅" : detail.status === "failure" ? "❌" : "⏭️";
-      lines.push(`${icon} **${detail.name}** (${(detail.duration / 1000).toFixed(2)}s)`);
+      const icon =
+        detail.status === "success"
+          ? "✅"
+          : detail.status === "failure"
+            ? "❌"
+            : "⏭️";
+      lines.push(
+        `${icon} **${detail.name}** (${(detail.duration / 1000).toFixed(2)}s)`,
+      );
       if (detail.error) {
         lines.push(`   - Error: ${detail.error}`);
       }
@@ -892,7 +1020,8 @@ export const reportGenerator = {
 // Interactive menu builder for better UX
 export class InteractiveMenu {
   private title: string;
-  private items: Array<{ label: string; value: any; description?: string }> = [];
+  private items: Array<{ label: string; value: any; description?: string }> =
+    [];
 
   constructor(title: string) {
     this.title = title;
@@ -928,25 +1057,33 @@ export class TrendAnalyzer {
 
   getAverage(): number {
     if (this.dataPoints.length === 0) return 0;
-    return this.dataPoints.reduce((sum, dp) => sum + dp.value, 0) / this.dataPoints.length;
+    return (
+      this.dataPoints.reduce((sum, dp) => sum + dp.value, 0) /
+      this.dataPoints.length
+    );
   }
 
   getMax(): number {
-    return Math.max(...this.dataPoints.map(dp => dp.value), 0);
+    return Math.max(...this.dataPoints.map((dp) => dp.value), 0);
   }
 
   getMin(): number {
-    return Math.min(...this.dataPoints.map(dp => dp.value), Infinity);
+    return Math.min(...this.dataPoints.map((dp) => dp.value), Infinity);
   }
 
   getTrend(): "improving" | "degrading" | "stable" {
     if (this.dataPoints.length < 2) return "stable";
 
     const recent = this.dataPoints.slice(-5);
-    const older = this.dataPoints.slice(0, Math.max(1, this.dataPoints.length - 5));
+    const older = this.dataPoints.slice(
+      0,
+      Math.max(1, this.dataPoints.length - 5),
+    );
 
-    const recentAvg = recent.reduce((sum, dp) => sum + dp.value, 0) / recent.length;
-    const olderAvg = older.reduce((sum, dp) => sum + dp.value, 0) / older.length;
+    const recentAvg =
+      recent.reduce((sum, dp) => sum + dp.value, 0) / recent.length;
+    const olderAvg =
+      older.reduce((sum, dp) => sum + dp.value, 0) / older.length;
 
     const changePercent = ((olderAvg - recentAvg) / olderAvg) * 100;
 
@@ -963,9 +1100,12 @@ export class TrendAnalyzer {
 
     log.info(`\n${colors.bold}Trend Analysis: ${label}${colors.reset}`);
     log.info(`Average: ${(avg / 1000).toFixed(2)}s`);
-    log.info(`Range: ${(min / 1000).toFixed(2)}s - ${(max / 1000).toFixed(2)}s`);
+    log.info(
+      `Range: ${(min / 1000).toFixed(2)}s - ${(max / 1000).toFixed(2)}s`,
+    );
 
-    const trendIcon = trend === "improving" ? "📈" : trend === "degrading" ? "📉" : "➡️";
+    const trendIcon =
+      trend === "improving" ? "📈" : trend === "degrading" ? "📉" : "➡️";
     log.info(`Trend: ${trendIcon} ${trend}`);
   }
 }
@@ -979,7 +1119,11 @@ export interface RollbackPoint {
 
 export class SafeExecutor {
   private rollbackPoints: RollbackPoint[] = [];
-  private executionLog: Array<{ operation: string; success: boolean; timestamp: number }> = [];
+  private executionLog: Array<{
+    operation: string;
+    success: boolean;
+    timestamp: number;
+  }> = [];
 
   createRollbackPoint(description: string): string {
     const id = `rollback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -989,23 +1133,38 @@ export class SafeExecutor {
 
   async executeWithSafety<T>(
     operation: () => Promise<T>,
-    operationName: string
+    operationName: string,
   ): Promise<{ success: boolean; result?: T; error?: Error }> {
     try {
       const result = await operation();
-      this.executionLog.push({ operation: operationName, success: true, timestamp: Date.now() });
+      this.executionLog.push({
+        operation: operationName,
+        success: true,
+        timestamp: Date.now(),
+      });
       return { success: true, result };
     } catch (err) {
-      this.executionLog.push({ operation: operationName, success: false, timestamp: Date.now() });
-      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+      this.executionLog.push({
+        operation: operationName,
+        success: false,
+        timestamp: Date.now(),
+      });
+      return {
+        success: false,
+        error: err instanceof Error ? err : new Error(String(err)),
+      };
     }
   }
 
-  getExecutionLog(): Array<{ operation: string; success: boolean; timestamp: number }> {
+  getExecutionLog(): Array<{
+    operation: string;
+    success: boolean;
+    timestamp: number;
+  }> {
     return [...this.executionLog];
   }
 
   getAvailableRollbacks(): RollbackPoint[] {
     return [...this.rollbackPoints];
   }
-};
+}
