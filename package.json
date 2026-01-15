@@ -4,7 +4,7 @@
   "description": "Clone and sync all CROW-B3 repositories",
   "type": "module",
   "scripts": {
-    "start": "concurrently -n gateway,auth,users,products,orgs,analytics,notif,patterns,interact,chat,qna,mcp,billing,a2a,ingest,dashboard,landing,auth-client,rogue -c cyan,blue,green,yellow,magenta,red,cyan,blue,green,yellow,magenta,red,cyan,blue,green,yellow,magenta,red,cyan \"cd ../core-api-gateway && bun dev\" \"cd ../core-auth-service && bun dev\" \"cd ../core-user-service && bun dev\" \"cd ../core-product-service && bun dev\" \"cd ../core-organization-service && bun dev\" \"cd ../core-analytics-service && bun dev\" \"cd ../core-notification-service && bun dev\" \"cd ../core-pattern-service && bun dev\" \"cd ../core-interaction-service && bun dev\" \"cd ../bff-chat-service && bun dev\" \"cd ../bff-qna-service && bun dev\" \"cd ../mcp-service && npm run dev\" \"cd ../core-billing-service && bun dev\" \"cd ../a2a-service && bun dev\" \"cd ../web-ingest-service && bun dev\" \"cd ../dashboard-client && bun dev\" \"cd ../landing-client && bun dev\" \"cd ../auth-client && bun dev\" \"cd ../rogue-store && pnpm dev\"",
+    "start": "bun run src/start.ts",
     "clone": "bun run src/clone.ts",
     "sync": "bun run src/sync.ts",
     "clone:all": "bun run src/clone.ts --all",
