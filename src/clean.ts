@@ -3,10 +3,8 @@
 import { $ } from "bun";
 import { writeFile } from "fs/promises";
 import { search, select, confirm, input } from "@inquirer/prompts";
-import yargs from "yargs";
-import { hideBin } from "yargs/helpers";
 import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
-import { colors as c, log, ProgressDisplay, flushWrites, AuditLogger, safetyValidator } from "./utils";
+import { colors as c, log, printSummary, symbols } from "./utils";
 
 type ResourceType = "d1" | "r2" | "both";
 type Environment = "production" | "dev" | "local" | "both";
@@ -19,65 +17,29 @@ interface CleanupSelection {
   r2ToClean: R2Resource[];
 }
 
-interface CleanupStats {
-  totalTime: number;
-  d1Cleaned: number;
-  d1Failed: number;
-  r2Cleaned: number;
-  r2ObjectsDeleted: number;
-  r2Failed: number;
-}
-
-interface RetryConfig {
-  maxRetries: number;
-  delayMs: number;
-  backoffMultiplier: number;
-}
-
-const banner = () => {
-  console.clear();
-  log.info(`
-${c.red}${c.bold}  _____ _      ______          _   _ _    _ _____
-${c.red} / ____| |    |  ____|   /\\   | \\ | | |  | |  __ \\
-${c.red}| |    | |    | |__     /  \\  |  \\| | |  | | |__) |
+const printCleanBanner = () => {
+  console.log(`
+${c.cyan}${c.bold}  _____ _      ______          _   _ _    _ _____
+${c.cyan} / ____| |    |  ____|   /\\   | \\ | | |  | |  __ \\
+${c.cyan}| |    | |    | |__     /  \\  |  \\| | |  | | |__) |
 ${c.yellow}| |    | |    |  __|   / /\\ \\ | . \` | |  | |  ___/
 ${c.yellow}| |____| |____| |____ / ____ \\| |\\  | |__| | |
-${c.green} \\_____|______|______/_/    \\_\\_| \\_|\\____/|_|
-${c.reset}
-${c.dim}  Cloudflare D1 & R2 Resource Cleanup Tool${c.reset}
-${c.dim}  ─────────────────────────────────────────${c.reset}
+${c.green} \\_____|______|______/_/    \\_\\_| \\_|\\____/|_|${c.reset}
+${c.bold}${c.red}  CLEAN${c.reset}
+${c.dim}  Resource Cleanup Tool${c.reset}
   `);
+};
+
+const printCleanHeader = () => {
+  console.log(`\n${c.bold}${c.cyan}${"=".repeat(50)}${c.reset}`);
+  console.log(`${c.bold}${c.cyan}  Clean${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${"=".repeat(50)}${c.reset}\n`);
 };
 
 const tag = (env: "production" | "dev" | "local"): string => {
   if (env === "production") return `${c.red}[PROD]${c.reset}`;
   if (env === "dev") return `${c.yellow}[DEV]${c.reset}`;
   return `${c.cyan}[LOCAL]${c.reset}`;
-};
-
-// Retry mechanism with exponential backoff
-const withRetry = async <T>(
-  operation: () => Promise<T>,
-  config: RetryConfig,
-  operationName: string = "operation"
-): Promise<{ success: boolean; result?: T; error?: string; attempts: number }> => {
-  let lastError: string | undefined;
-  let delay = config.delayMs;
-
-  for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-    try {
-      const result = await operation();
-      return { success: true, result, attempts: attempt };
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      if (attempt < config.maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= config.backoffMultiplier;
-      }
-    }
-  }
-
-  return { success: false, error: lastError, attempts: config.maxRetries };
 };
 
 const selectService = async (): Promise<ServiceResources> => {
@@ -232,441 +194,225 @@ const printConfirmation = (selection: CleanupSelection): void => {
   }
 };
 
-const cleanD1Database = async (
-  d1: D1Resource,
-  retryConfig: RetryConfig,
-  display?: ProgressDisplay,
-  dryRun: boolean = false
-): Promise<{ success: boolean; tablesCleared: number; error?: string }> => {
+const queryDatabaseTables = async (d1Name: string): Promise<string[] | null> => {
+  const tablesResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
+
+  if (tablesResult.exitCode !== 0) {
+    log.error(`D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}`);
+    return null;
+  }
+
   try {
-    // Step 1: List tables
-    if (display) await display.updateWithRepo(d1.name, `${c.blue}📋${c.reset} Scanning...`, "list", 0.25);
-
-    const tablesResult = await withRetry(
-      () => $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow(),
-      retryConfig,
-      `list-tables-${d1.name}`
-    );
-
-    if (!tablesResult.success || tablesResult.result?.exitCode !== 0) {
-      const error = tablesResult.error || "Failed to list tables";
-      return { success: false, tablesCleared: 0, error };
+    const parsed = JSON.parse(tablesResult.stdout.toString());
+    if (Array.isArray(parsed) && parsed[0]?.results) {
+      return parsed[0].results.map((r: { name: string }) => r.name);
     }
+  } catch {
+    return [];
+  }
 
-    const output = tablesResult.result!.stdout.toString();
-    let tables: string[] = [];
+  return [];
+};
 
-    try {
-      const parsed = JSON.parse(output);
-      if (Array.isArray(parsed) && parsed[0]?.results) {
-        tables = parsed[0].results.map((r: { name: string }) => r.name);
+const verifyAllTablesEmpty = async (d1Name: string, tables: string[]): Promise<boolean> => {
+  for (const table of tables) {
+    const countResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command "SELECT COUNT(*) as cnt FROM ${table};" --json`.quiet().nothrow();
+
+    if (countResult.exitCode === 0) {
+      try {
+        const parsed = JSON.parse(countResult.stdout.toString());
+        if (Array.isArray(parsed) && parsed[0]?.results?.[0]?.cnt > 0) {
+          log.error(`Table ${table} still has ${parsed[0].results[0].cnt} rows after cleanup`);
+          return false;
+        }
+      } catch {
+        return false;
       }
-    } catch (err) {
-      return { success: true, tablesCleared: 0 };
     }
+  }
 
-    if (tables.length === 0) {
-      return { success: true, tablesCleared: 0 };
-    }
+  return true;
+};
 
-    if (dryRun) {
-      if (display) await display.updateWithRepo(d1.name, `${c.cyan}[DRY-RUN]${c.reset}`, "preview", 0.75);
-      return { success: true, tablesCleared: tables.length };
-    }
-
-    // Step 2: Clean tables
-    if (display) await display.updateWithRepo(d1.name, `${c.yellow}🧹${c.reset} Cleaning ${tables.length} tables...`, "clean", 0.5);
-
-    const deleteStatements = tables.map(table => `DELETE FROM ${table};`).join("\n");
-    const cleanupSQL = `PRAGMA foreign_keys = OFF;
+const executeDatabaseCleanup = async (d1Name: string, d1Id: string, tables: string[]): Promise<boolean> => {
+  const deleteStatements = tables.map(table => `DELETE FROM ${table};`).join("\n");
+  const cleanupSQL = `PRAGMA foreign_keys = OFF;
 ${deleteStatements}
 PRAGMA foreign_keys = ON;`;
 
-    const tempFileName = `.cleanup_${d1.id}_${Date.now()}.sql`;
-    await writeFile(tempFileName, cleanupSQL);
+  const tempFileName = `.cleanup_${d1Id}_${Date.now()}.sql`;
+  await writeFile(tempFileName, cleanupSQL);
 
-    try {
-      const cleanupResult = await withRetry(
-        () => $`bunx wrangler d1 execute ${d1.name} --remote --file ${tempFileName} --json`.quiet().nothrow(),
-        retryConfig,
-        `clean-${d1.name}`
-      );
+  try {
+    const cleanupResult = await $`bunx wrangler d1 execute ${d1Name} --remote --file ${tempFileName} --json`.quiet().nothrow();
 
-      if (!cleanupResult.success) {
-        return { success: false, tablesCleared: 0, error: cleanupResult.error };
-      }
-
-      if (display) await display.updateWithRepo(d1.name, `${c.green}✓${c.reset} Verified`, "verify", 0.95);
-      return { success: true, tablesCleared: tables.length };
-    } finally {
-      await $`rm ${tempFileName}`.quiet().nothrow();
+    if (cleanupResult.exitCode !== 0) {
+      const errorOutput = cleanupResult.stderr.toString() || cleanupResult.stdout.toString();
+      log.error(`Failed to clean database: ${errorOutput}`);
+      return false;
     }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : "Unknown error";
-    return { success: false, tablesCleared: 0, error };
+
+    return await verifyAllTablesEmpty(d1Name, tables);
+  } finally {
+    await $`rm ${tempFileName}`.quiet().nothrow();
+  }
+};
+
+const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
+  try {
+    const tables = await queryDatabaseTables(d1.name);
+
+    if (tables === null) {
+      return false;
+    }
+
+    if (tables.length === 0) {
+      return true;
+    }
+
+    return await executeDatabaseCleanup(d1.name, d1.id, tables);
+  } catch {
+    return false;
   }
 };
 
 const CLOUDFLARE_API_TOKEN = Bun.env['CLOUDFLARE_API_TOKEN'] || "";
 const CLOUDFLARE_ACCOUNT_ID = Bun.env['CLOUDFLARE_ACCOUNT_ID'] || "";
 
-type CleanResult = { success: boolean; objectsDeleted: number; error?: string };
+type CleanResult = { success: boolean; count?: number };
 
-const cleanR2Bucket = async (
-  r2: R2Resource,
-  retryConfig: RetryConfig,
-  batchSize: number = 10,
-  display?: ProgressDisplay,
-  dryRun: boolean = false
-): Promise<CleanResult> => {
+const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
   try {
-    // Step 1: List objects
-    if (display) await display.updateWithRepo(r2.name, `${c.magenta}📋${c.reset} Listing objects...`, "list", 0.2);
-
     const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${r2.name}/objects`;
-
-    const listResult = await withRetry(
-      async () => {
-        const response = await fetch(listUrl, {
-          headers: {
-            "Authorization": `Bearer ${CLOUDFLARE_API_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        });
-        return response;
+    const listResponse = await fetch(listUrl, {
+      headers: {
+        "Authorization": `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        "Content-Type": "application/json",
       },
-      retryConfig,
-      `list-r2-${r2.name}`
-    );
+    });
 
-    if (!listResult.success) {
-      return { success: false, objectsDeleted: 0, error: "Failed to list R2 objects" };
-    }
-
-    const listResponse = listResult.result!;
     if (!listResponse.ok) {
       if (listResponse.status === 404) {
-        return { success: true, objectsDeleted: 0 };
+        return { success: true, count: 0 };
       }
       const errText = await listResponse.text();
-      return { success: false, objectsDeleted: 0, error: `R2 API Error (${listResponse.status}): ${errText}` };
+      log.error(`R2 API Error (${listResponse.status}): ${errText}`);
+      return { success: false };
     }
 
     const listData = await listResponse.json() as { result?: { key: string }[] };
     const objects = listData.result || [];
 
     if (objects.length === 0) {
-      return { success: true, objectsDeleted: 0 };
+      return { success: true, count: 0 };
     }
 
-    if (dryRun) {
-      if (display) await display.updateWithRepo(r2.name, `${c.cyan}[DRY-RUN]${c.reset}`, "preview", 0.75);
-      return { success: true, objectsDeleted: objects.length };
+    for (const obj of objects) {
+      await $`bunx wrangler r2 object delete ${r2.name}/${obj.key} --remote`.quiet().nothrow();
     }
 
-    // Step 2: Delete objects in parallel batches
-    if (display) await display.updateWithRepo(r2.name, `${c.yellow}🗑️${c.reset} Deleting ${objects.length} objects (${batchSize}/batch)...`, "delete", 0.4);
-
-    let deletedCount = 0;
-    for (let i = 0; i < objects.length; i += batchSize) {
-      const batch = objects.slice(i, i + batchSize);
-      const progress = (i + batch.length) / objects.length;
-
-      if (display) await display.updateWithRepo(r2.name, `${c.yellow}🗑️${c.reset} Deleting ${batch.length}/${objects.length}...`, "delete", 0.4 + progress * 0.35);
-
-      const deletePromises = batch.map(obj =>
-        withRetry(
-          () => $`bunx wrangler r2 object delete ${r2.name}/${obj.key} --remote`.quiet().nothrow(),
-          { maxRetries: 2, delayMs: 100, backoffMultiplier: 2 },
-          `delete-r2-${obj.key}`
-        )
-      );
-
-      const results = await Promise.all(deletePromises);
-      deletedCount += results.filter(r => r.success).length;
-    }
-
-    if (display) await display.updateWithRepo(r2.name, `${c.green}✓${c.reset} Verified`, "verify", 0.95);
-    return { success: true, objectsDeleted: deletedCount };
-  } catch (err) {
-    const error = err instanceof Error ? err.message : "Unknown error";
-    return { success: false, objectsDeleted: 0, error };
+    return { success: true, count: objects.length };
+  } catch {
+    return { success: false };
   }
 };
 
-const executeCleanup = async (
-  selection: CleanupSelection,
-  options: {
-    parallelLimit: number;
-    batchSize: number;
-    retryCount: number;
-    dryRun: boolean;
-    verbose: boolean;
-  }
-): Promise<CleanupStats> => {
-  const startTime = Date.now();
-  const stats: CleanupStats = {
-    totalTime: 0,
-    d1Cleaned: 0,
-    d1Failed: 0,
-    r2Cleaned: 0,
-    r2ObjectsDeleted: 0,
-    r2Failed: 0,
-  };
+const executeCleanup = async (selection: CleanupSelection): Promise<{ success: string[]; failed: string[] }> => {
+  log.info(`\nStarting cleanup...\n`);
 
-  const retryConfig: RetryConfig = {
-    maxRetries: options.retryCount,
-    delayMs: 300,
-    backoffMultiplier: 1.5,
-  };
+  const success: string[] = [];
+  const failed: string[] = [];
 
-  log.info(`\n${c.cyan}🚀 Starting cleanup${options.dryRun ? ` (DRY-RUN)` : ''}...${c.reset}\n`);
-
-  // Create cleanup tasks for parallel execution
-  const cleanupTasks: (() => Promise<void>)[] = [];
-
-  // D1 cleanup tasks
   for (const d1 of selection.d1ToClean) {
-    cleanupTasks.push(async () => {
-      const display = new ProgressDisplay();
-      await display.init("", d1.name, 0);
-
-      const result = await cleanD1Database(d1, retryConfig, display, options.dryRun);
-
-      if (result.success) {
-        await display.finalize(`${c.green}✅${c.reset} Cleaned ${result.tablesCleared} tables`, d1.name, true);
-        stats.d1Cleaned++;
-      } else {
-        await display.finalize(`${c.red}❌${c.reset} ${result.error || "Failed"}`, d1.name, false);
-        stats.d1Failed++;
-      }
-    });
-  }
-
-  // R2 cleanup tasks
-  for (const r2 of selection.r2ToClean) {
-    cleanupTasks.push(async () => {
-      const display = new ProgressDisplay();
-      await display.init("", r2.name, 0);
-
-      const result = await cleanR2Bucket(r2, retryConfig, options.batchSize, display, options.dryRun);
-
-      if (result.success) {
-        await display.finalize(`${c.green}✅${c.reset} Deleted ${result.objectsDeleted} objects`, r2.name, true);
-        stats.r2Cleaned++;
-        stats.r2ObjectsDeleted += result.objectsDeleted;
-      } else {
-        await display.finalize(`${c.red}❌${c.reset} ${result.error || "Failed"}`, r2.name, false);
-        stats.r2Failed++;
-      }
-    });
-  }
-
-  // Execute cleanup operations in parallel with concurrency limit
-  const limit = Math.min(options.parallelLimit, cleanupTasks.length);
-  const executing: Set<Promise<void>> = new Set();
-
-  for (let i = 0; i < cleanupTasks.length; i++) {
-    const task = cleanupTasks[i];
-    const promise = Promise.resolve(task()).then(() => executing.delete(promise));
-    executing.add(promise);
-
-    if (executing.size >= limit) {
-      await Promise.race(executing);
+    process.stdout.write(`${symbols.arrow} ${c.bold}${d1.name}${c.reset} `);
+    const isSuccess = await cleanD1Database(d1);
+    if (isSuccess) {
+      console.log(`${c.green}[OK]${c.reset}`);
+      success.push(d1.name);
+    } else {
+      console.log(`${c.red}[FAIL]${c.reset}`);
+      failed.push(d1.name);
     }
   }
 
-  await Promise.all(executing);
-  await flushWrites();
-
-  stats.totalTime = Date.now() - startTime;
-
-  // Print enhanced summary
-  const totalResources = selection.d1ToClean.length + selection.r2ToClean.length;
-  const totalSuccess = stats.d1Cleaned + stats.r2Cleaned;
-  const totalFailed = stats.d1Failed + stats.r2Failed;
-  const successRate = totalResources > 0 ? Math.round((totalSuccess / totalResources) * 100) : 0;
-  const totalTimeS = (stats.totalTime / 1000).toFixed(2);
-
-  log.info(`\n${c.bold}${c.cyan}${"=".repeat(60)}${c.reset}`);
-  log.info(`${c.bold}${c.cyan}  🎉 CLEANUP COMPLETE${c.reset}`);
-  log.info(`${c.bold}${c.cyan}${"=".repeat(60)}${c.reset}`);
-
-  if (stats.d1Cleaned > 0) {
-    log.info(`${c.blue}📦 D1: ${stats.d1Cleaned} database${stats.d1Cleaned !== 1 ? 's' : ''} cleaned${c.reset}`);
-  }
-  if (stats.d1Failed > 0) {
-    log.info(`${c.red}❌ D1: ${stats.d1Failed} failed${c.reset}`);
+  for (const r2 of selection.r2ToClean) {
+    process.stdout.write(`${symbols.arrow} ${c.bold}${r2.name}${c.reset} `);
+    const result = await cleanR2Bucket(r2);
+    if (result.success) {
+      console.log(`${c.green}[OK]${c.reset}`);
+      success.push(r2.name);
+    } else {
+      console.log(`${c.red}[FAIL]${c.reset}`);
+      failed.push(r2.name);
+    }
   }
 
-  if (stats.r2Cleaned > 0) {
-    log.info(`${c.magenta}🪣 R2: ${stats.r2Cleaned} bucket${stats.r2Cleaned !== 1 ? 's' : ''} emptied (${stats.r2ObjectsDeleted} objects deleted)${c.reset}`);
-  }
-  if (stats.r2Failed > 0) {
-    log.info(`${c.red}❌ R2: ${stats.r2Failed} failed${c.reset}`);
-  }
+  return { success, failed };
+};
 
-  log.info(`${c.green}✅ Success Rate: ${successRate}%${c.reset}`);
-  log.info(`${c.blue}⏱️  Total Time: ${totalTimeS}s${c.reset}`);
-
-  if (options.dryRun) {
-    log.info(`${c.cyan}[DRY-RUN]${c.reset} No actual cleanup was performed`);
+const getConfirmationFromUser = async (hasProd: boolean): Promise<boolean> => {
+  if (hasProd) {
+    const typed = await input({
+      message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
+    });
+    return typed === "DELETE";
   }
 
-  log.info(`${c.bold}${c.cyan}${"=".repeat(60)}${c.reset}\n`);
+  return await confirm({
+    message: `${c.yellow}Proceed with cleanup?${c.reset}`,
+    default: false
+  });
+};
 
-  return stats;
+const selectAndValidateResources = async (
+  service: ServiceResources,
+  resourceType: ResourceType,
+  environment: Environment
+): Promise<CleanupSelection> => {
+  const { d1, r2 } = getResourcesToClean(service, resourceType, environment);
+
+  if (d1.length === 0 && r2.length === 0) {
+    log.warn(`No resources found. Exiting.\n`);
+    process.exit(0);
+  }
+
+  return {
+    service,
+    resourceType,
+    environment,
+    d1ToClean: d1,
+    r2ToClean: r2,
+  };
 };
 
 const main = async () => {
   try {
-    const argv = await yargs(hideBin(process.argv))
-      .scriptName("clean")
-      .usage("$0 [options]")
-      .option("parallel", {
-        alias: "p",
-        type: "number",
-        description: "Number of parallel cleanup operations (default: 5, max: 20)",
-        default: 5,
-      })
-      .option("batch-size", {
-        alias: "b",
-        type: "number",
-        description: "Batch size for R2 object deletion (default: 10)",
-        default: 10,
-      })
-      .option("retry-count", {
-        alias: "r",
-        type: "number",
-        description: "Retry failed operations (default: 3)",
-        default: 3,
-      })
-      .option("dry-run", {
-        alias: "d",
-        type: "boolean",
-        description: "Preview what would be cleaned without actually deleting",
-        default: false,
-      })
-      .option("verbose", {
-        alias: "v",
-        type: "boolean",
-        description: "Verbose output with detailed information",
-        default: false,
-      })
-      .option("audit-log", {
-        alias: "a",
-        type: "string",
-        description: "Save audit log to file (JSON format)",
-        default: undefined,
-      })
-      .example("$0", "Interactive cleanup")
-      .example("$0 --dry-run", "Preview cleanup without actual deletion")
-      .example("$0 --parallel 10", "Cleanup with 10 parallel operations")
-      .example("$0 --audit-log audit.json", "Save audit log to file")
-      .help()
-      .alias("help", "h")
-      .parse();
+    printCleanBanner();
+    printCleanHeader();
 
-    const parallelLimit = Math.max(1, Math.min(20, argv.parallel as number));
-    const batchSize = Math.max(1, Math.min(100, argv["batch-size"] as number));
-    const retryCount = Math.max(0, Math.min(5, argv["retry-count"] as number));
-    const dryRun = argv["dry-run"] as boolean;
-    const verbose = argv.verbose as boolean;
-    const auditLogFile = argv["audit-log"] as string | undefined;
-
-    // Initialize audit logger for Phase 4 safety features
-    const auditLogger = new AuditLogger(auditLogFile);
-
-    banner();
-
-    // Step 1: Select service (with fuzzy search)
     const service = await selectService();
-    log.info("");
+    console.log();
 
-    // Step 2: Select resource type (D1, R2, or both) - shows relevant names
     const resourceType = await selectResourceType(service);
-    log.info("");
+    console.log();
 
-    // Step 3: Select environment - shows what will be cleaned
     const environment = await selectEnvironment(service, resourceType);
-    log.info("");
+    console.log();
 
-    // Step 4: Auto-select resources based on choices (no extra prompts!)
-    const { d1, r2 } = getResourcesToClean(service, resourceType, environment);
+    const selection = await selectAndValidateResources(service, resourceType, environment);
+    printConfirmation(selection);
 
-    if (d1.length === 0 && r2.length === 0) {
-      log.warn(`No resources found. Exiting.\n`);
+    const hasProd = [...selection.d1ToClean, ...selection.r2ToClean].some(r => r.env === "production");
+    const isConfirmed = await getConfirmationFromUser(hasProd);
+
+    if (!isConfirmed) {
+      log.warn(`Aborted.\n`);
       process.exit(0);
     }
 
-    const selection: CleanupSelection = {
-      service,
-      resourceType,
-      environment,
-      d1ToClean: d1,
-      r2ToClean: r2,
-    };
-
-    // Step 5: Show confirmation summary
-    printConfirmation(selection);
-
-    // Step 6: Final confirmation
-    const hasProd = [...d1, ...r2].some(r => r.env === "production");
-
-    if (!dryRun) {
-      if (hasProd) {
-        const typed = await input({
-          message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
-        });
-        if (typed !== "DELETE") {
-          log.warn(`Aborted.\n`);
-          process.exit(0);
-        }
-      } else {
-        const confirmed = await confirm({
-          message: `${c.yellow}Proceed with cleanup?${c.reset}`,
-          default: false
-        });
-        if (!confirmed) {
-          log.warn(`Aborted.\n`);
-          process.exit(0);
-        }
-      }
-    } else {
-      log.warn(`${c.cyan}[DRY-RUN MODE]${c.reset} - No resources will be deleted\n`);
-    }
-
-    // Step 7: Execute cleanup with enhanced options
-    const stats = await executeCleanup(selection, {
-      parallelLimit,
-      batchSize,
-      retryCount,
-      dryRun,
-      verbose,
-    });
-
-    // Log all cleanup operations for audit trail
-    if (stats.d1Cleaned > 0) {
-      auditLogger.log("cleanup", "D1 Databases", "success", { count: stats.d1Cleaned });
-    }
-    if (stats.d1Failed > 0) {
-      auditLogger.log("cleanup", "D1 Databases", "failure", { count: stats.d1Failed });
-    }
-    if (stats.r2Cleaned > 0) {
-      auditLogger.log("cleanup", "R2 Buckets", "success", { count: stats.r2Cleaned, objectsDeleted: stats.r2ObjectsDeleted });
-    }
-    if (stats.r2Failed > 0) {
-      auditLogger.log("cleanup", "R2 Buckets", "failure", { count: stats.r2Failed });
-    }
-
-    // Export audit log if requested
-    if (auditLogFile) {
-      const auditLog = await auditLogger.export();
-      await writeFile(auditLogFile, auditLog);
-      log.success(`📋 Audit log saved to: ${auditLogFile}\n`);
-    }
-
-    log.success(`Cleanup complete! (${(stats.totalTime / 1000).toFixed(2)}s)\n`);
+    const cleanupResult = await executeCleanup(selection);
+    printSummary({ success: cleanupResult.success, failed: cleanupResult.failed, skipped: [] });
+    log.success(`Cleanup complete!\n`);
   } catch (err) {
     if ((err as Error).name === "ExitPromptError") {
       log.warn(`Cancelled.\n`);
