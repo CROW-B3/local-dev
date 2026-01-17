@@ -12,7 +12,7 @@ const batch4 = 'concurrently -n products,qna -c cyan,blue "cd ../core-product-se
 
 const procs: ReturnType<typeof spawn>[] = [];
 
-const run = (cmd: string) => procs.push(spawn(['sh', '-c', cmd], { stdio: ['ignore', 'inherit', 'inherit'] }));
+const run = (cmd: string) => procs.push(spawn(['sh', '-c', cmd], { stdio: ['inherit', 'inherit', 'inherit'] }));
 
 const main = async () => {
   console.log('[batch 1/4] Starting core services...');
@@ -25,9 +25,9 @@ const main = async () => {
 
   console.log('[batch 3/4] Starting frontends + ingest...');
   run(batch3);
-  await sleep(3000);
+  await sleep(5000);
 
-  console.log('[batch 4/4] Starting cloud-dependent services...');
+  console.log('[batch 4/4] Starting cloud-dependent services (AI/Vectorize)...');
   run(batch4);
 
   process.on('SIGINT', () => { procs.forEach(p => p.kill()); process.exit(0); });
