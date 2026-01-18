@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun";
-import { writeFile } from "fs/promises";
+import { writeFile, unlink } from "fs/promises";
 import { search, select, confirm, input } from "@inquirer/prompts";
 import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
 import { colors as c, log, printSummary, symbols } from "./utils";
@@ -134,7 +134,7 @@ const selectEnvironment = async (
         description: getResources("production"),
       },
       {
-        name: `${c.red}${c.bold}[BOTH]${c.reset} ${c.dim}(very dangerous!)${c.reset}`,
+        name: `${c.red}${c.bold}[ALL ENVS]${c.reset} ${c.dim}(very dangerous!)${c.reset}`,
         value: "both" as const,
         description: getAllResources(),
       },
@@ -168,7 +168,14 @@ const printConfirmation = (selection: CleanupSelection): void => {
 
   log.info(`${c.bold}Service:${c.reset}     ${c.cyan}${selection.service.service}${c.reset}`);
   log.info(`${c.bold}Description:${c.reset} ${selection.service.displayName}`);
-  log.info(`${c.bold}Environment:${c.reset} ${selection.environment === "both" ? `${c.red}PROD + DEV${c.reset}` : selection.environment === "production" ? `${c.red}PROD${c.reset}` : `${c.yellow}DEV${c.reset}`}`);
+  const envLabel = selection.environment === "both"
+    ? `${c.red}ALL ENVS${c.reset}`
+    : selection.environment === "production"
+      ? `${c.red}PROD${c.reset}`
+      : selection.environment === "dev"
+        ? `${c.yellow}DEV${c.reset}`
+        : `${c.cyan}LOCAL${c.reset}`;
+  log.info(`${c.bold}Environment:${c.reset} ${envLabel}`);
   log.info("");
 
   if (selection.d1ToClean.length > 0) {
@@ -215,20 +222,28 @@ const queryDatabaseTables = async (d1Name: string): Promise<string[] | null> => 
 };
 
 const verifyAllTablesEmpty = async (d1Name: string, tables: string[]): Promise<boolean> => {
-  for (const table of tables) {
-    const countResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command "SELECT COUNT(*) as cnt FROM ${table};" --json`.quiet().nothrow();
+  if (tables.length === 0) return true;
 
-    if (countResult.exitCode === 0) {
-      try {
-        const parsed = JSON.parse(countResult.stdout.toString());
-        if (Array.isArray(parsed) && parsed[0]?.results?.[0]?.cnt > 0) {
-          log.error(`Table ${table} still has ${parsed[0].results[0].cnt} rows after cleanup`);
+  const unionQuery = tables
+    .map(t => `SELECT '${t}' as tbl, COUNT(*) as cnt FROM ${t}`)
+    .join(" UNION ALL ");
+
+  const countResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command ${unionQuery} --json`.quiet().nothrow();
+
+  if (countResult.exitCode !== 0) return false;
+
+  try {
+    const parsed = JSON.parse(countResult.stdout.toString());
+    if (Array.isArray(parsed) && parsed[0]?.results) {
+      for (const row of parsed[0].results) {
+        if (row.cnt > 0) {
+          log.error(`Table ${row.tbl} still has ${row.cnt} rows after cleanup`);
           return false;
         }
-      } catch {
-        return false;
       }
     }
+  } catch {
+    return false;
   }
 
   return true;
@@ -254,7 +269,7 @@ PRAGMA foreign_keys = ON;`;
 
     return await verifyAllTablesEmpty(d1Name, tables);
   } finally {
-    await $`rm ${tempFileName}`.quiet().nothrow();
+    await unlink(tempFileName).catch(() => {});
   }
 };
 
@@ -282,6 +297,11 @@ const CLOUDFLARE_ACCOUNT_ID = Bun.env['CLOUDFLARE_ACCOUNT_ID'] || "";
 type CleanResult = { success: boolean; count?: number };
 
 const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
+  if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ACCOUNT_ID) {
+    log.error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID environment variables");
+    return { success: false };
+  }
+
   try {
     const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${r2.name}/objects`;
     const listResponse = await fetch(listUrl, {

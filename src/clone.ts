@@ -14,10 +14,11 @@ import {
   log,
   printHeader,
   printSummary,
+  renderer,
   repoExists,
   runInstall,
   runWithConcurrency,
-  symbols,
+  type PackageManager,
 } from "./utils";
 
 interface CloneResult {
@@ -31,41 +32,43 @@ const cloneRepoWithDeps = async (repoName: string, repoUrl: string): Promise<Clo
   const repoPath = getRepoPath(repoName);
 
   if (repoExists(repoName)) {
+    renderer.update(repoName, "skip", "Already exists");
     return { name: repoName, success: false, skipped: true, reason: "Already exists" };
   }
 
   if (dirExists(repoName)) {
+    renderer.update(repoName, "skip", "Directory exists (not a git repo)");
     return { name: repoName, success: false, skipped: true, reason: "Directory exists (not a git repo)" };
   }
 
-  process.stdout.write(`    ${colors.dim}Cloning...${colors.reset} `);
+  renderer.update(repoName, "cloning");
   const cloneSuccess = await cloneRepo(repoUrl, repoPath);
   if (!cloneSuccess) {
+    renderer.update(repoName, "error", "Clone failed");
     return { name: repoName, success: false, skipped: false, reason: "Clone failed" };
   }
-  console.log(`${colors.green}✓${colors.reset}`);
 
-  const pm = detectPackageManager(repoPath);
+  const pm: PackageManager = detectPackageManager(repoPath);
   if (pm === "none") {
+    renderer.update(repoName, "done");
     return { name: repoName, success: true, skipped: false };
   }
 
-  process.stdout.write(`    ${colors.dim}Installing ${pm}${colors.reset} `);
+  renderer.update(repoName, "installing", undefined, pm);
   const installSuccess = await runInstall(repoPath);
   if (!installSuccess) {
-    console.log(`${colors.yellow}⚠${colors.reset}`);
+    renderer.update(repoName, "done", `${pm} install failed`, pm);
     return { name: repoName, success: true, skipped: false, reason: `Cloned (${pm} install failed)` };
   }
-  console.log(`${colors.green}✓${colors.reset}`);
 
-  process.stdout.write(`    ${colors.dim}Initializing husky${colors.reset} `);
+  renderer.update(repoName, "husky", undefined, pm);
   const huskySuccess = await initializeHusky(repoPath);
   if (!huskySuccess) {
-    console.log(`${colors.yellow}⚠${colors.reset}`);
+    renderer.update(repoName, "done", "Husky init failed", pm);
     return { name: repoName, success: true, skipped: false, reason: "Cloned (husky init failed)" };
   }
-  console.log(`${colors.green}✓${colors.reset}`);
 
+  renderer.update(repoName, "done", undefined, pm);
   return { name: repoName, success: true, skipped: false };
 };
 
@@ -117,31 +120,37 @@ const main = async () => {
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
   const CLONE_CONCURRENCY = 3;
 
-  await runWithConcurrency(repos, CLONE_CONCURRENCY, async repo => {
-    const repoUrl = getRepoUrl(repo.name);
-    process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
+  for (const repo of repos) {
+    renderer.addRepo(repo.name);
+  }
 
-    const result = await cloneRepoWithDeps(repo.name, repoUrl);
+  renderer.start();
 
-    if (result.skipped) {
-      console.log(`${colors.yellow}[SKIP]${colors.reset} ${result.reason}`);
-      results.skipped.push(repo.name);
-    } else if (result.success) {
-      console.log(`${colors.green}[OK]${colors.reset}`);
-      results.success.push(repo.name);
-    } else {
-      console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
-      results.failed.push(repo.name);
+  try {
+    const cloneResults = await runWithConcurrency(repos, CLONE_CONCURRENCY, async repo => {
+      const repoUrl = getRepoUrl(repo.name);
+      return cloneRepoWithDeps(repo.name, repoUrl);
+    });
+
+    for (const result of cloneResults) {
+      if (result.skipped) {
+        results.skipped.push(result.name);
+      } else if (result.success) {
+        results.success.push(result.name);
+      } else {
+        results.failed.push(result.name);
+      }
     }
-
-    return result;
-  });
+  } finally {
+    renderer.stop();
+  }
 
   printSummary(results);
   if (results.failed.length > 0) process.exit(1);
 };
 
 main().catch((err) => {
+  renderer.stop();
   log.error(`Unexpected error: ${err.message}`);
   process.exit(1);
 });

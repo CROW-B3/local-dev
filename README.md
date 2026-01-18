@@ -29,11 +29,9 @@ All 22 default repositories will be cloned to the parent directory with dependen
 ### Clone
 
 ```bash
-bun run clone              # Clone default repos (22)
-bun run clone --all        # Clone all repos including optional (30)
+bun run clone              # Clone default repos
+bun run clone --all        # Include optional repos
 bun run clone --only NAME  # Clone specific repo
-bun run clone --dry-run    # Preview without cloning
-bun run clone --help       # Show help
 ```
 
 ### Sync
@@ -41,10 +39,17 @@ bun run clone --help       # Show help
 ```bash
 bun run sync              # Sync all repos (skip dirty)
 bun run sync --force      # Stash changes and sync
+bun run sync --parallel   # Sync in parallel (3 concurrent)
 bun run sync --only NAME  # Sync specific repo
-bun run sync --dry-run    # Preview without syncing
-bun run sync --help       # Show help
 ```
+
+### Clean
+
+```bash
+bun run clean             # Interactive D1/R2 cleanup
+```
+
+Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` for R2 operations.
 
 ## Workspace Structure
 
@@ -68,4 +73,4 @@ Edit `repos.config.ts` to add or remove repositories.
 | Auth failed | Run `gh auth login` or configure SSH keys |
 | Permission denied | Check CROW-B3 org access |
 | Sync skipping repos | Has uncommitted changes, use `--force` |
-| Clone fails | Check if repo exists: `gh repo view CROW-B3/name` |
+| R2 cleanup fails | Set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` |
