@@ -2,6 +2,7 @@
 
 import { spawn } from 'bun';
 import { log } from './utils';
+import { $ } from "bun";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -15,26 +16,26 @@ const batch4 = 'concurrently -n products,qna -c cyan,blue "cd ../core-product-se
 
 const procs: ReturnType<typeof spawn>[] = [];
 
-const run = (cmd: string) => procs.push(spawn(['sh', '-c', cmd], { stdio: ['inherit', 'inherit', 'inherit'] }));
+const run = (cmd: string) => $`${{ raw: cmd }}`;
 
-const main = async () => {
-  log.info('[batch 1/4] Starting core services...');
-  run(batch1);
-  await sleep(2000);
+  const main = async () => {
+    log.info('[batch 1/4] Starting core services...');
+    run(batch1);
+    await sleep(2000);
 
-  log.info('[batch 2/4] Starting more services...');
-  run(batch2);
-  await sleep(2000);
+    log.info('[batch 2/4] Starting more services...');
+    run(batch2);
+    await sleep(2000);
 
-  log.info('[batch 3/4] Starting frontends + ingest...');
-  run(batch3);
-  await sleep(5000);
+    log.info('[batch 3/4] Starting frontends + ingest...');
+    run(batch3);
+    await sleep(5000);
 
-  log.info('[batch 4/4] Starting cloud-dependent services (AI/Vectorize)...');
-  run(batch4);
+    log.info('[batch 4/4] Starting cloud-dependent services (AI/Vectorize)...');
+    run(batch4);
 
-  process.on('SIGINT', () => { procs.forEach(p => p.kill()); process.exit(0); });
-  await new Promise(() => {});
-};
+    process.on('SIGINT', () => { procs.forEach(p => p.kill()); process.exit(0); });
+    await new Promise(() => { });
+  };
 
-main();
+  main();
