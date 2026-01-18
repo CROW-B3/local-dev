@@ -31,6 +31,7 @@ export const REPOS: RepoConfig[] = [
   { name: "core-analytics-service", description: "Analytics Service", category: "core-service", cloneByDefault: true, isPrivate: true },
   { name: "core-notification-service", description: "Notification Service", category: "core-service", cloneByDefault: true, isPrivate: true },
   { name: "core-organization-service", description: "Organization Service", category: "core-service", cloneByDefault: true, isPrivate: true },
+  { name: "core-billing-service", description: "Billing Service", category: "core-service", cloneByDefault: true, isPrivate: true },
 
   // Supporting Services
   { name: "bff-chat-service", description: "Chat BFF", category: "supporting-service", cloneByDefault: true, isPrivate: true },
