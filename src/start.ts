@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawn } from 'bun';
+import { log } from './utils';
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -17,19 +18,19 @@ const procs: ReturnType<typeof spawn>[] = [];
 const run = (cmd: string) => procs.push(spawn(['sh', '-c', cmd], { stdio: ['inherit', 'inherit', 'inherit'] }));
 
 const main = async () => {
-  console.log('[batch 1/4] Starting core services...');
+  log.info('[batch 1/4] Starting core services...');
   run(batch1);
   await sleep(2000);
 
-  console.log('[batch 2/4] Starting more services...');
+  log.info('[batch 2/4] Starting more services...');
   run(batch2);
   await sleep(2000);
 
-  console.log('[batch 3/4] Starting frontends + ingest...');
+  log.info('[batch 3/4] Starting frontends + ingest...');
   run(batch3);
   await sleep(5000);
 
-  console.log('[batch 4/4] Starting cloud-dependent services (AI/Vectorize)...');
+  log.info('[batch 4/4] Starting cloud-dependent services (AI/Vectorize)...');
   run(batch4);
 
   process.on('SIGINT', () => { procs.forEach(p => p.kill()); process.exit(0); });
