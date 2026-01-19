@@ -2,7 +2,6 @@
 
 import { spawn } from 'bun';
 import { log } from './utils';
-import { $ } from "bun";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -16,7 +15,7 @@ const batch4 = 'concurrently -n products,qna -c cyan,blue "cd ../core-product-se
 
 const procs: ReturnType<typeof spawn>[] = [];
 
-const run = (cmd: string) => $`${{ raw: cmd }}`;
+const run = (cmd: string) => procs.push(spawn(['sh', '-c', cmd], { stdio: ['inherit', 'inherit', 'inherit'] }));
 
   const main = async () => {
     log.info('[batch 1/4] Starting core services...');
