@@ -1,5 +1,5 @@
-import { $ } from "bun";
-import { existsSync } from "fs";
+import { $, type Subprocess } from "bun";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 export type PackageManager = "bun" | "pnpm" | "yarn" | "npm" | "none";
@@ -272,6 +272,49 @@ export const stashChanges = async (repoPath: string): Promise<boolean> => {
   }
 };
 
+export interface BranchMatchResult {
+  exactMatch: string | null;
+  partialMatches: string[];
+}
+
+export const findMatchingRemoteBranches = async (repoPath: string, searchTerm: string): Promise<BranchMatchResult> => {
+  const emptyResult: BranchMatchResult = { exactMatch: null, partialMatches: [] };
+
+  try {
+    const result = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
+    if (result.exitCode !== 0) return emptyResult;
+
+    const lines = result.stdout.toString().trim().split("\n").filter(Boolean);
+    const branches = lines.map(line => line.split("\t")[1]?.replace("refs/heads/", "")).filter(Boolean);
+    const searchLower = searchTerm.toLowerCase();
+
+    const exactMatch = branches.find(b => b.toLowerCase() === searchLower) || null;
+    if (exactMatch) return { exactMatch, partialMatches: [] };
+
+    const partialMatches = branches.filter(b => b.toLowerCase().includes(searchLower));
+    return { exactMatch: null, partialMatches };
+  } catch {
+    return emptyResult;
+  }
+};
+
+export const getBranchesWithOpenPRs = async (repoName: string, branches: string[]): Promise<string[]> => {
+  if (branches.length === 0) return [];
+
+  try {
+    const result = await $`gh pr list --repo CROW-B3/${repoName} --state open --json headRefName`.quiet().nothrow();
+    if (result.exitCode !== 0) return branches;
+
+    const prs = JSON.parse(result.stdout.toString()) as { headRefName: string }[];
+    const openPRBranches = new Set(prs.map(pr => pr.headRefName));
+
+    const branchesWithPRs = branches.filter(b => openPRBranches.has(b));
+    return branchesWithPRs.length > 0 ? branchesWithPRs : branches;
+  } catch {
+    return branches;
+  }
+};
+
 const getPackageManagerByLockFile = (repoPath: string): PackageManager | null => {
   const bunLockFiles = ["bun.lockb", "bun.lock"];
   const hasBunLock = bunLockFiles.some(file => existsSync(join(repoPath, file)));
@@ -369,4 +412,78 @@ export const runWithConcurrency = async <T, R>(
 
   await Promise.all(executing);
   return results;
+};
+
+export interface DevServerResult {
+  repoName: string;
+  success: boolean;
+  error?: string;
+}
+
+export const hasDevScript = (repoPath: string): boolean => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return false;
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    return Boolean(packageJson.scripts?.dev);
+  } catch {
+    return false;
+  }
+};
+
+export const getDevCommand = (repoPath: string): string[] | null => {
+  if (!hasDevScript(repoPath)) return null;
+  const pm = detectPackageManager(repoPath);
+  const commands: Record<PackageManager, string[] | null> = {
+    bun: ["bun", "run", "dev"],
+    pnpm: ["pnpm", "run", "dev"],
+    yarn: ["yarn", "dev"],
+    npm: ["npm", "run", "dev"],
+    none: null,
+  };
+  return commands[pm];
+};
+
+export const startDevServer = (repoPath: string): Subprocess | null => {
+  const command = getDevCommand(repoPath);
+  if (!command) return null;
+
+  try {
+    const proc = Bun.spawn(command, {
+      cwd: repoPath,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: { ...process.env, FORCE_COLOR: "1" },
+    });
+    return proc;
+  } catch {
+    return null;
+  }
+};
+
+export const killAllDevServers = (processes: Map<string, Subprocess>): void => {
+  for (const [, proc] of processes) {
+    try {
+      proc.kill();
+    } catch {}
+  }
+  processes.clear();
+};
+
+export const getDevScriptPort = (repoPath: string): number | null => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return null;
+
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const devScript = packageJson.scripts?.dev as string | undefined;
+    if (!devScript) return null;
+
+    const portMatch = devScript.match(/--port\s+(\d+)|:(\d{4,5})\b|-p\s+(\d+)/);
+    if (!portMatch) return null;
+
+    return parseInt(portMatch[1] || portMatch[2] || portMatch[3], 10);
+  } catch {
+    return null;
+  }
 };
