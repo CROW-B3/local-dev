@@ -81,6 +81,10 @@ const prepareRepo = async (repoName: string, targetBranch: string): Promise<Chec
     return checkoutAndPull(repoName, exactMatch);
   }
 
+  if (partialMatches.length === 1) {
+    return checkoutAndPull(repoName, partialMatches[0]);
+  }
+
   if (partialMatches.length === 0) {
     renderer.update(repoName, "pulling");
     const pullSuccess = await pullLatest(repoPath);
@@ -92,15 +96,14 @@ const prepareRepo = async (repoName: string, targetBranch: string): Promise<Chec
     return { name: repoName, success: true, skipped: false, targetBranch: defaultBranch, checkedOutToFeature: false };
   }
 
-  const matchLabel = partialMatches.length === 1 ? "1 partial match" : `${partialMatches.length} matches`;
-  renderer.update(repoName, "skip", matchLabel);
+  renderer.update(repoName, "skip", `${partialMatches.length} matches`);
   return {
     name: repoName,
     success: false,
     skipped: true,
     ambiguous: true,
     candidates: partialMatches,
-    reason: matchLabel,
+    reason: `${partialMatches.length} matches`,
     checkedOutToFeature: false,
   };
 };
@@ -131,12 +134,18 @@ const resolveAmbiguousRepo = async (
   candidates: string[]
 ): Promise<CheckoutResult> => {
   const branchesWithPRs = await getBranchesWithOpenPRs(repoName, candidates);
+  const branchesWithoutPRs = candidates.filter(b => !branchesWithPRs.includes(b));
 
   const choices = [
     ...branchesWithPRs.map(branch => ({
       name: branch,
       value: branch,
-      description: candidates.length !== branchesWithPRs.length ? "Has open PR" : undefined,
+      description: `${colors.green}● Open PR${colors.reset}`,
+    })),
+    ...branchesWithoutPRs.map(branch => ({
+      name: branch,
+      value: branch,
+      description: `${colors.dim}No PR${colors.reset}`,
     })),
     {
       name: `${colors.dim}Don't checkout${colors.reset}`,
@@ -147,7 +156,7 @@ const resolveAmbiguousRepo = async (
 
   console.log();
   const selected = await select({
-    message: `${colors.cyan}${repoName}${colors.reset} - Select branch:`,
+    message: `${colors.cyan}${repoName}${colors.reset} - Multiple matches found. Select branch:`,
     choices,
   });
 
@@ -165,35 +174,49 @@ interface DevServerInfo {
 }
 
 const printDevServerSummary = (started: DevServerInfo[], skipped: string[]): void => {
-  console.log(`\n${colors.bold}${"─".repeat(50)}${colors.reset}`);
-  console.log(`${colors.bold}${colors.cyan}  Dev Servers${colors.reset}`);
-  console.log(`${colors.bold}${"─".repeat(50)}${colors.reset}`);
+  console.log(`\n${colors.bold}${colors.cyan}${"═".repeat(60)}${colors.reset}`);
+  console.log(`${colors.bold}${colors.cyan}  🚀 Dev Servers Running${colors.reset}`);
+  console.log(`${colors.bold}${colors.cyan}${"═".repeat(60)}${colors.reset}\n`);
 
   if (started.length > 0) {
-    console.log(`${colors.green}${symbols.success} Running: ${started.length}${colors.reset}`);
+    console.log(`${colors.green}${symbols.success} ${started.length} server${started.length !== 1 ? "s" : ""} started${colors.reset}\n`);
     for (const server of started) {
-      const portLabel = server.port ? ` ${colors.dim}:${server.port}${colors.reset}` : "";
-      console.log(`   ${colors.dim}${symbols.dot}${colors.reset} ${server.repoName}${portLabel}`);
+      const url = server.port ? `http://localhost:${server.port}` : "no port";
+      const portDisplay = server.port
+        ? `${colors.magenta}:${server.port}${colors.reset}`
+        : `${colors.dim}(no port)${colors.reset}`;
+      const paddedName = server.repoName.padEnd(35);
+      console.log(`  ${colors.green}●${colors.reset} ${colors.bold}${paddedName}${colors.reset} → ${colors.blue}${url}${colors.reset}`);
     }
   }
 
   if (skipped.length > 0) {
-    console.log(`${colors.yellow}${symbols.warning} Skipped: ${skipped.length} (no dev script)${colors.reset}`);
+    console.log(`\n${colors.yellow}${symbols.warning} ${skipped.length} skipped (no dev script)${colors.reset}`);
+    for (const repo of skipped) {
+      console.log(`  ${colors.dim}○ ${repo}${colors.reset}`);
+    }
   }
 
-  console.log(`\n${colors.dim}Press Ctrl+C to stop all servers${colors.reset}\n`);
+  console.log(`\n${colors.bold}${colors.cyan}${"─".repeat(60)}${colors.reset}`);
+  console.log(`${colors.yellow}⏸  ${colors.bold}Press Ctrl+C${colors.reset}${colors.yellow} to stop all servers${colors.reset}`);
+  console.log(`${colors.cyan}📝 ${colors.bold}Logs${colors.reset}${colors.cyan} are displayed above${colors.reset}`);
+  console.log(`${colors.bold}${colors.cyan}${"─".repeat(60)}${colors.reset}\n`);
 };
 
 const startDevServersForRepos = async (repoNames: string[]): Promise<void> => {
-  log.info(`\n${colors.cyan}Starting dev servers for ${repoNames.length} repo(s)...${colors.reset}`);
+  console.log(`\n${colors.bold}${colors.cyan}${"═".repeat(60)}${colors.reset}`);
+  console.log(`${colors.bold}${colors.cyan}  🔧 Setting up Dev Servers${colors.reset}`);
+  console.log(`${colors.bold}${colors.cyan}${"═".repeat(60)}${colors.reset}\n`);
+  log.info(`Starting dev servers for ${colors.yellow}${repoNames.length} repo(s)${colors.reset}...\n`);
 
   const devProcesses = new Map<string, Subprocess>();
   const startedServers: DevServerInfo[] = [];
   const skippedRepos: string[] = [];
 
   const cleanup = (): void => {
-    console.log(`\n${colors.yellow}Shutting down dev servers...${colors.reset}`);
+    console.log(`\n${colors.yellow}${symbols.warning} Shutting down dev servers...${colors.reset}`);
     killAllDevServers(devProcesses);
+    console.log(`${colors.green}${symbols.success} All dev servers stopped.${colors.reset}\n`);
     process.exit(0);
   };
 
@@ -202,7 +225,7 @@ const startDevServersForRepos = async (repoNames: string[]): Promise<void> => {
 
   for (const repoName of repoNames) {
     const repoPath = getRepoPath(repoName);
-    const proc = startDevServer(repoPath);
+    const proc = startDevServer(repoPath, true);
 
     if (proc) {
       devProcesses.set(repoName, proc);
@@ -223,13 +246,13 @@ const startDevServersForRepos = async (repoNames: string[]): Promise<void> => {
   const checkInterval = setInterval(() => {
     for (const [name, proc] of devProcesses) {
       if (proc.exitCode !== null) {
-        log.error(`${name} exited with code ${proc.exitCode}`);
+        console.log(`\n${colors.red}${symbols.error} ${name} exited with code ${proc.exitCode}${colors.reset}`);
         devProcesses.delete(name);
       }
     }
     if (devProcesses.size === 0) {
       clearInterval(checkInterval);
-      log.warn("All dev servers have stopped.");
+      console.log(`\n${colors.red}${symbols.error} All dev servers have stopped.${colors.reset}`);
       process.exit(1);
     }
   }, 2000);

@@ -291,8 +291,17 @@ export const findMatchingRemoteBranches = async (repoPath: string, searchTerm: s
     const exactMatch = branches.find(b => b.toLowerCase() === searchLower) || null;
     if (exactMatch) return { exactMatch, partialMatches: [] };
 
-    const partialMatches = branches.filter(b => b.toLowerCase().includes(searchLower));
-    return { exactMatch: null, partialMatches };
+    const matchedBranches = branches
+      .filter(b => b.toLowerCase().includes(searchLower))
+      .sort((a, b) => {
+        const aLower = a.toLowerCase();
+        const bLower = b.toLowerCase();
+        if (aLower.startsWith(searchLower) && !bLower.startsWith(searchLower)) return -1;
+        if (!aLower.startsWith(searchLower) && bLower.startsWith(searchLower)) return 1;
+        return a.localeCompare(b);
+      });
+
+    return { exactMatch: null, partialMatches: matchedBranches };
   } catch {
     return emptyResult;
   }
@@ -444,19 +453,169 @@ export const getDevCommand = (repoPath: string): string[] | null => {
   return commands[pm];
 };
 
-export const startDevServer = (repoPath: string): Subprocess | null => {
+const needsInstall = (repoPath: string): boolean => {
+  const bunLockFiles = ["bun.lockb", "bun.lock"];
+  const hasBunLock = bunLockFiles.some(file => existsSync(join(repoPath, file)));
+  const hasPnpmLock = existsSync(join(repoPath, "pnpm-lock.yaml"));
+  const hasYarnLock = existsSync(join(repoPath, "yarn.lock"));
+  const hasNpmLock = existsSync(join(repoPath, "package-lock.json"));
+
+  const hasLockFile = hasBunLock || hasPnpmLock || hasYarnLock || hasNpmLock;
+  if (!hasLockFile) return false;
+
+  const nodeModules = join(repoPath, "node_modules");
+  return !existsSync(nodeModules);
+};
+
+const getInstallCommand = (repoPath: string): string[] | null => {
+  const pm = detectPackageManager(repoPath);
+  const commands: Record<PackageManager, string[] | null> = {
+    bun: ["bun", "install"],
+    pnpm: ["pnpm", "install"],
+    yarn: ["yarn", "install"],
+    npm: ["npm", "install"],
+    none: null,
+  };
+  return commands[pm];
+};
+
+const installLinkedDependencies = (repoPath: string): boolean => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return false;
+
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+    const linkedDeps = Object.entries(deps).filter(([, v]) => typeof v === "string" && (v.startsWith("link:") || v.startsWith("file:")));
+
+    if (linkedDeps.length === 0) return false;
+
+    for (const [, depValue] of linkedDeps) {
+      if (typeof depValue === "string" && (depValue.startsWith("link:") || depValue.startsWith("file:"))) {
+        const linkedPath = join(repoPath, depValue.replace(/^(link|file):/, ""));
+        if (existsSync(linkedPath)) {
+          const depRepoName = linkedPath.split(/[\/\\]/).pop() || linkedPath;
+          const linkedPackageJsonPath = join(linkedPath, "package.json");
+
+          if (existsSync(linkedPackageJsonPath)) {
+            const linkedPackageJson = JSON.parse(readFileSync(linkedPackageJsonPath, "utf-8"));
+            const hasBuild = linkedPackageJson.scripts?.build;
+
+            if (needsInstall(linkedPath)) {
+              const installCmd = getInstallCommand(linkedPath);
+              if (installCmd) {
+                log.info(`${colors.cyan}Installing linked dependency${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                const isWindows = process.platform === "win32";
+                const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+                Bun.spawnSync(shellCommand, { cwd: linkedPath });
+              }
+            }
+
+            if (hasBuild) {
+              const linkedPm = detectPackageManager(linkedPath);
+              const buildCommands: Record<PackageManager, string[] | null> = {
+                bun: ["bun", "run", "build"],
+                pnpm: ["pnpm", "run", "build"],
+                yarn: ["yarn", "build"],
+                npm: ["npm", "run", "build"],
+                none: null,
+              };
+              const buildCmd = buildCommands[linkedPm];
+              if (buildCmd) {
+                log.info(`${colors.cyan}Building linked dependency${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                const isWindows = process.platform === "win32";
+                const shellCommand = isWindows ? ["cmd", "/c", buildCmd.join(" ")] : ["bash", "-c", buildCmd.join(" ")];
+                const buildResult = Bun.spawnSync(shellCommand, { cwd: linkedPath, stdout: "pipe", stderr: "pipe" });
+                if (buildResult.exitCode !== 0) {
+                  const stderr = new TextDecoder().decode(buildResult.stderr);
+                  log.error(`${colors.red}Build failed for ${depRepoName}:${colors.reset}\n${stderr}`);
+                } else {
+                  log.info(`${colors.green}Successfully built${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const startDevServer = (repoPath: string, forceInstall: boolean = false): Subprocess | null => {
   const command = getDevCommand(repoPath);
   if (!command) return null;
 
+  if (forceInstall || needsInstall(repoPath)) {
+    const installCmd = getInstallCommand(repoPath);
+    if (installCmd) {
+      const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+      log.info(`${colors.cyan}Installing dependencies${colors.reset} ${colors.dim}[${repoName}]${colors.reset}`);
+      const isWindows = process.platform === "win32";
+      const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+      const installResult = Bun.spawnSync(shellCommand, { cwd: repoPath });
+      if (installResult.exitCode !== 0) {
+        log.error(`Failed to install dependencies in ${repoPath}`);
+        return null;
+      }
+    }
+  }
+
+  const hadLinkedDeps = installLinkedDependencies(repoPath);
+  if (hadLinkedDeps) {
+    const installCmd = getInstallCommand(repoPath);
+    if (installCmd) {
+      const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+      log.info(`${colors.cyan}Reinstalling to link dependencies${colors.reset} ${colors.dim}[${repoName}]${colors.reset}`);
+      const isWindows = process.platform === "win32";
+      const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+      Bun.spawnSync(shellCommand, { cwd: repoPath });
+    }
+  }
+
   try {
-    const proc = Bun.spawn(command, {
+    const isWindows = process.platform === "win32";
+    const spawnCommand = isWindows ? ["cmd", "/c", command.join(" ")] : command;
+    const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+
+    const proc = Bun.spawn(spawnCommand, {
       cwd: repoPath,
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, FORCE_COLOR: "1" },
     });
+    if (!proc) {
+      log.error(`Failed to spawn process for ${repoPath}`);
+      return null;
+    }
+
+    if (proc.stdout) {
+      proc.stdout.pipeTo(new WritableStream({
+        write(chunk: Uint8Array) {
+          const text = new TextDecoder().decode(chunk);
+          text.split("\n").forEach(line => {
+            if (line.trim()) console.log(`${colors.dim}[${repoName}]${colors.reset} ${line}`);
+          });
+        },
+      })).catch(() => {});
+    }
+
+    if (proc.stderr) {
+      proc.stderr.pipeTo(new WritableStream({
+        write(chunk: Uint8Array) {
+          const text = new TextDecoder().decode(chunk);
+          text.split("\n").forEach(line => {
+            if (line.trim()) console.log(`${colors.dim}[${repoName}]${colors.reset} ${colors.yellow}${line}${colors.reset}`);
+          });
+        },
+      })).catch(() => {});
+    }
+
     return proc;
-  } catch {
+  } catch (error) {
+    log.error(`Error spawning dev server for ${repoPath}: ${error}`);
     return null;
   }
 };
