@@ -43,6 +43,21 @@ bun run sync --parallel   # Sync in parallel (3 concurrent)
 bun run sync --only NAME  # Sync specific repo
 ```
 
+### Checkout
+
+```bash
+bun run checkout CROW-156           # Checkout branch by keyword across all repos
+bun run checkout CROW-156 --start   # Checkout and start dev servers
+bun run checkout CROW-156 --only NAME # Checkout specific repo
+```
+
+**Features:**
+- Keyword matching: finds branches containing the keyword (case-insensitive)
+- Auto-checkout: if only one branch matches, checks out automatically
+- Smart selection: if multiple matches, prompts user with PR indicators
+- Auto-install: with `--start`, installs dependencies and linked packages before starting servers
+- Clean logs: dev server output prefixed with repo names for clarity
+
 ### Clean
 
 ```bash
@@ -73,4 +88,7 @@ Edit `repos.config.ts` to add or remove repositories.
 | Auth failed | Run `gh auth login` or configure SSH keys |
 | Permission denied | Check CROW-B3 org access |
 | Sync skipping repos | Has uncommitted changes, use `--force` |
+| Checkout finds no branch | Branch doesn't exist on remote, check spelling |
+| Dev servers don't start | Ensure dependencies installed, use `bun install` |
+| Port already in use | Another process using port, check with `lsof -i :PORT` |
 | R2 cleanup fails | Set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` |

@@ -1,5 +1,5 @@
-import { $ } from "bun";
-import { existsSync } from "fs";
+import { $, type Subprocess } from "bun";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 export type PackageManager = "bun" | "pnpm" | "yarn" | "npm" | "none";
@@ -272,6 +272,58 @@ export const stashChanges = async (repoPath: string): Promise<boolean> => {
   }
 };
 
+export interface BranchMatchResult {
+  exactMatch: string | null;
+  partialMatches: string[];
+}
+
+export const findMatchingRemoteBranches = async (repoPath: string, searchTerm: string): Promise<BranchMatchResult> => {
+  const emptyResult: BranchMatchResult = { exactMatch: null, partialMatches: [] };
+
+  try {
+    const result = await $`git -C ${repoPath} ls-remote --heads origin`.quiet().nothrow();
+    if (result.exitCode !== 0) return emptyResult;
+
+    const lines = result.stdout.toString().trim().split("\n").filter(Boolean);
+    const branches = lines.map(line => line.split("\t")[1]?.replace("refs/heads/", "")).filter(Boolean);
+    const searchLower = searchTerm.toLowerCase();
+
+    const exactMatch = branches.find(b => b.toLowerCase() === searchLower) || null;
+    if (exactMatch) return { exactMatch, partialMatches: [] };
+
+    const matchedBranches = branches
+      .filter(b => b.toLowerCase().includes(searchLower))
+      .sort((a, b) => {
+        const aLower = a.toLowerCase();
+        const bLower = b.toLowerCase();
+        if (aLower.startsWith(searchLower) && !bLower.startsWith(searchLower)) return -1;
+        if (!aLower.startsWith(searchLower) && bLower.startsWith(searchLower)) return 1;
+        return a.localeCompare(b);
+      });
+
+    return { exactMatch: null, partialMatches: matchedBranches };
+  } catch {
+    return emptyResult;
+  }
+};
+
+export const getBranchesWithOpenPRs = async (repoName: string, branches: string[]): Promise<string[]> => {
+  if (branches.length === 0) return [];
+
+  try {
+    const result = await $`gh pr list --repo CROW-B3/${repoName} --state open --json headRefName`.quiet().nothrow();
+    if (result.exitCode !== 0) return branches;
+
+    const prs = JSON.parse(result.stdout.toString()) as { headRefName: string }[];
+    const openPRBranches = new Set(prs.map(pr => pr.headRefName));
+
+    const branchesWithPRs = branches.filter(b => openPRBranches.has(b));
+    return branchesWithPRs.length > 0 ? branchesWithPRs : branches;
+  } catch {
+    return branches;
+  }
+};
+
 const getPackageManagerByLockFile = (repoPath: string): PackageManager | null => {
   const bunLockFiles = ["bun.lockb", "bun.lock"];
   const hasBunLock = bunLockFiles.some(file => existsSync(join(repoPath, file)));
@@ -369,4 +421,228 @@ export const runWithConcurrency = async <T, R>(
 
   await Promise.all(executing);
   return results;
+};
+
+export interface DevServerResult {
+  repoName: string;
+  success: boolean;
+  error?: string;
+}
+
+export const hasDevScript = (repoPath: string): boolean => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return false;
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    return Boolean(packageJson.scripts?.dev);
+  } catch {
+    return false;
+  }
+};
+
+export const getDevCommand = (repoPath: string): string[] | null => {
+  if (!hasDevScript(repoPath)) return null;
+  const pm = detectPackageManager(repoPath);
+  const commands: Record<PackageManager, string[] | null> = {
+    bun: ["bun", "run", "dev"],
+    pnpm: ["pnpm", "run", "dev"],
+    yarn: ["yarn", "dev"],
+    npm: ["npm", "run", "dev"],
+    none: null,
+  };
+  return commands[pm];
+};
+
+const needsInstall = (repoPath: string): boolean => {
+  const bunLockFiles = ["bun.lockb", "bun.lock"];
+  const hasBunLock = bunLockFiles.some(file => existsSync(join(repoPath, file)));
+  const hasPnpmLock = existsSync(join(repoPath, "pnpm-lock.yaml"));
+  const hasYarnLock = existsSync(join(repoPath, "yarn.lock"));
+  const hasNpmLock = existsSync(join(repoPath, "package-lock.json"));
+
+  const hasLockFile = hasBunLock || hasPnpmLock || hasYarnLock || hasNpmLock;
+  if (!hasLockFile) return false;
+
+  const nodeModules = join(repoPath, "node_modules");
+  return !existsSync(nodeModules);
+};
+
+const getInstallCommand = (repoPath: string): string[] | null => {
+  const pm = detectPackageManager(repoPath);
+  const commands: Record<PackageManager, string[] | null> = {
+    bun: ["bun", "install"],
+    pnpm: ["pnpm", "install"],
+    yarn: ["yarn", "install"],
+    npm: ["npm", "install"],
+    none: null,
+  };
+  return commands[pm];
+};
+
+const installLinkedDependencies = (repoPath: string): boolean => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return false;
+
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+    const linkedDeps = Object.entries(deps).filter(([, v]) => typeof v === "string" && (v.startsWith("link:") || v.startsWith("file:")));
+
+    if (linkedDeps.length === 0) return false;
+
+    for (const [, depValue] of linkedDeps) {
+      if (typeof depValue === "string" && (depValue.startsWith("link:") || depValue.startsWith("file:"))) {
+        const linkedPath = join(repoPath, depValue.replace(/^(link|file):/, ""));
+        if (existsSync(linkedPath)) {
+          const depRepoName = linkedPath.split(/[\/\\]/).pop() || linkedPath;
+          const linkedPackageJsonPath = join(linkedPath, "package.json");
+
+          if (existsSync(linkedPackageJsonPath)) {
+            const linkedPackageJson = JSON.parse(readFileSync(linkedPackageJsonPath, "utf-8"));
+            const hasBuild = linkedPackageJson.scripts?.build;
+
+            if (needsInstall(linkedPath)) {
+              const installCmd = getInstallCommand(linkedPath);
+              if (installCmd) {
+                log.info(`${colors.cyan}Installing linked dependency${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                const isWindows = process.platform === "win32";
+                const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+                Bun.spawnSync(shellCommand, { cwd: linkedPath });
+              }
+            }
+
+            if (hasBuild) {
+              const linkedPm = detectPackageManager(linkedPath);
+              const buildCommands: Record<PackageManager, string[] | null> = {
+                bun: ["bun", "run", "build"],
+                pnpm: ["pnpm", "run", "build"],
+                yarn: ["yarn", "build"],
+                npm: ["npm", "run", "build"],
+                none: null,
+              };
+              const buildCmd = buildCommands[linkedPm];
+              if (buildCmd) {
+                log.info(`${colors.cyan}Building linked dependency${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                const isWindows = process.platform === "win32";
+                const shellCommand = isWindows ? ["cmd", "/c", buildCmd.join(" ")] : ["bash", "-c", buildCmd.join(" ")];
+                const buildResult = Bun.spawnSync(shellCommand, { cwd: linkedPath, stdout: "pipe", stderr: "pipe" });
+                if (buildResult.exitCode !== 0) {
+                  const stderr = new TextDecoder().decode(buildResult.stderr);
+                  log.error(`${colors.red}Build failed for ${depRepoName}:${colors.reset}\n${stderr}`);
+                } else {
+                  log.info(`${colors.green}Successfully built${colors.reset} ${colors.dim}[${depRepoName}]${colors.reset}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const startDevServer = (repoPath: string, forceInstall: boolean = false): Subprocess | null => {
+  const command = getDevCommand(repoPath);
+  if (!command) return null;
+
+  if (forceInstall || needsInstall(repoPath)) {
+    const installCmd = getInstallCommand(repoPath);
+    if (installCmd) {
+      const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+      log.info(`${colors.cyan}Installing dependencies${colors.reset} ${colors.dim}[${repoName}]${colors.reset}`);
+      const isWindows = process.platform === "win32";
+      const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+      const installResult = Bun.spawnSync(shellCommand, { cwd: repoPath });
+      if (installResult.exitCode !== 0) {
+        log.error(`Failed to install dependencies in ${repoPath}`);
+        return null;
+      }
+    }
+  }
+
+  const hadLinkedDeps = installLinkedDependencies(repoPath);
+  if (hadLinkedDeps) {
+    const installCmd = getInstallCommand(repoPath);
+    if (installCmd) {
+      const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+      log.info(`${colors.cyan}Reinstalling to link dependencies${colors.reset} ${colors.dim}[${repoName}]${colors.reset}`);
+      const isWindows = process.platform === "win32";
+      const shellCommand = isWindows ? ["cmd", "/c", installCmd.join(" ")] : ["bash", "-c", installCmd.join(" ")];
+      Bun.spawnSync(shellCommand, { cwd: repoPath });
+    }
+  }
+
+  try {
+    const isWindows = process.platform === "win32";
+    const spawnCommand = isWindows ? ["cmd", "/c", command.join(" ")] : command;
+    const repoName = repoPath.split(/[\/\\]/).pop() || repoPath;
+
+    const proc = Bun.spawn(spawnCommand, {
+      cwd: repoPath,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, FORCE_COLOR: "1" },
+    });
+    if (!proc) {
+      log.error(`Failed to spawn process for ${repoPath}`);
+      return null;
+    }
+
+    if (proc.stdout) {
+      proc.stdout.pipeTo(new WritableStream({
+        write(chunk: Uint8Array) {
+          const text = new TextDecoder().decode(chunk);
+          text.split("\n").forEach(line => {
+            if (line.trim()) console.log(`${colors.dim}[${repoName}]${colors.reset} ${line}`);
+          });
+        },
+      })).catch(() => {});
+    }
+
+    if (proc.stderr) {
+      proc.stderr.pipeTo(new WritableStream({
+        write(chunk: Uint8Array) {
+          const text = new TextDecoder().decode(chunk);
+          text.split("\n").forEach(line => {
+            if (line.trim()) console.log(`${colors.dim}[${repoName}]${colors.reset} ${colors.yellow}${line}${colors.reset}`);
+          });
+        },
+      })).catch(() => {});
+    }
+
+    return proc;
+  } catch (error) {
+    log.error(`Error spawning dev server for ${repoPath}: ${error}`);
+    return null;
+  }
+};
+
+export const killAllDevServers = (processes: Map<string, Subprocess>): void => {
+  for (const [, proc] of processes) {
+    try {
+      proc.kill();
+    } catch {}
+  }
+  processes.clear();
+};
+
+export const getDevScriptPort = (repoPath: string): number | null => {
+  const packageJsonPath = join(repoPath, "package.json");
+  if (!existsSync(packageJsonPath)) return null;
+
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const devScript = packageJson.scripts?.dev as string | undefined;
+    if (!devScript) return null;
+
+    const portMatch = devScript.match(/--port\s+(\d+)|:(\d{4,5})\b|-p\s+(\d+)/);
+    if (!portMatch) return null;
+
+    return parseInt(portMatch[1] || portMatch[2] || portMatch[3], 10);
+  } catch {
+    return null;
+  }
 };
