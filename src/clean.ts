@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun";
-import { writeFile } from "fs/promises";
+import { writeFile, unlink } from "fs/promises";
 import { search, select, confirm, input } from "@inquirer/prompts";
 import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
-import { colors as c, log } from "./utils";
+import { colors as c, log, printSummary, symbols } from "./utils";
 
 type ResourceType = "d1" | "r2" | "both";
 type Environment = "production" | "dev" | "local" | "both";
@@ -17,19 +17,23 @@ interface CleanupSelection {
   r2ToClean: R2Resource[];
 }
 
-const banner = () => {
-  console.clear();
-  log.info(`
-${c.red}${c.bold}  _____ _      ______          _   _ _    _ _____
-${c.red} / ____| |    |  ____|   /\\   | \\ | | |  | |  __ \\
-${c.red}| |    | |    | |__     /  \\  |  \\| | |  | | |__) |
+const printCleanBanner = () => {
+  console.log(`
+${c.cyan}${c.bold}  _____ _      ______          _   _ _    _ _____
+${c.cyan} / ____| |    |  ____|   /\\   | \\ | | |  | |  __ \\
+${c.cyan}| |    | |    | |__     /  \\  |  \\| | |  | | |__) |
 ${c.yellow}| |    | |    |  __|   / /\\ \\ | . \` | |  | |  ___/
 ${c.yellow}| |____| |____| |____ / ____ \\| |\\  | |__| | |
-${c.green} \\_____|______|______/_/    \\_\\_| \\_|\\____/|_|
-${c.reset}
-${c.dim}  Cloudflare D1 & R2 Resource Cleanup Tool${c.reset}
-${c.dim}  ─────────────────────────────────────────${c.reset}
+${c.green} \\_____|______|______/_/    \\_\\_| \\_|\\____/|_|${c.reset}
+${c.bold}${c.red}  CLEAN${c.reset}
+${c.dim}  Resource Cleanup Tool${c.reset}
   `);
+};
+
+const printCleanHeader = () => {
+  console.log(`\n${c.bold}${c.cyan}${"=".repeat(50)}${c.reset}`);
+  console.log(`${c.bold}${c.cyan}  Clean${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${"=".repeat(50)}${c.reset}\n`);
 };
 
 const tag = (env: "production" | "dev" | "local"): string => {
@@ -130,7 +134,7 @@ const selectEnvironment = async (
         description: getResources("production"),
       },
       {
-        name: `${c.red}${c.bold}[BOTH]${c.reset} ${c.dim}(very dangerous!)${c.reset}`,
+        name: `${c.red}${c.bold}[ALL ENVS]${c.reset} ${c.dim}(very dangerous!)${c.reset}`,
         value: "both" as const,
         description: getAllResources(),
       },
@@ -164,7 +168,14 @@ const printConfirmation = (selection: CleanupSelection): void => {
 
   log.info(`${c.bold}Service:${c.reset}     ${c.cyan}${selection.service.service}${c.reset}`);
   log.info(`${c.bold}Description:${c.reset} ${selection.service.displayName}`);
-  log.info(`${c.bold}Environment:${c.reset} ${selection.environment === "both" ? `${c.red}PROD + DEV${c.reset}` : selection.environment === "production" ? `${c.red}PROD${c.reset}` : `${c.yellow}DEV${c.reset}`}`);
+  const envLabel = selection.environment === "both"
+    ? `${c.red}ALL ENVS${c.reset}`
+    : selection.environment === "production"
+      ? `${c.red}PROD${c.reset}`
+      : selection.environment === "dev"
+        ? `${c.yellow}DEV${c.reset}`
+        : `${c.cyan}LOCAL${c.reset}`;
+  log.info(`${c.bold}Environment:${c.reset} ${envLabel}`);
   log.info("");
 
   if (selection.d1ToClean.length > 0) {
@@ -190,73 +201,91 @@ const printConfirmation = (selection: CleanupSelection): void => {
   }
 };
 
-const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
-  try {
-    const tablesResult = await $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
+const queryDatabaseTables = async (d1Name: string): Promise<string[] | null> => {
+  const tablesResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%';" --json`.quiet().nothrow();
 
-    if (tablesResult.exitCode !== 0) {
-      log.error(`D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}`);
+  if (tablesResult.exitCode !== 0) {
+    log.error(`D1 Error: ${tablesResult.stderr.toString() || tablesResult.stdout.toString()}`);
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(tablesResult.stdout.toString());
+    if (Array.isArray(parsed) && parsed[0]?.results) {
+      return parsed[0].results.map((r: { name: string }) => r.name);
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+};
+
+const verifyAllTablesEmpty = async (d1Name: string, tables: string[]): Promise<boolean> => {
+  if (tables.length === 0) return true;
+
+  const unionQuery = tables
+    .map(t => `SELECT '${t}' as tbl, COUNT(*) as cnt FROM ${t}`)
+    .join(" UNION ALL ");
+
+  const countResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command ${unionQuery} --json`.quiet().nothrow();
+
+  if (countResult.exitCode !== 0) return false;
+
+  try {
+    const parsed = JSON.parse(countResult.stdout.toString());
+    if (Array.isArray(parsed) && parsed[0]?.results) {
+      for (const row of parsed[0].results) {
+        if (row.cnt > 0) {
+          log.error(`Table ${row.tbl} still has ${row.cnt} rows after cleanup`);
+          return false;
+        }
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
+};
+
+const executeDatabaseCleanup = async (d1Name: string, d1Id: string, tables: string[]): Promise<boolean> => {
+  const deleteStatements = tables.map(table => `DELETE FROM ${table};`).join("\n");
+  const cleanupSQL = `PRAGMA foreign_keys = OFF;
+${deleteStatements}
+PRAGMA foreign_keys = ON;`;
+
+  const tempFileName = `.cleanup_${d1Id}_${Date.now()}.sql`;
+  await writeFile(tempFileName, cleanupSQL);
+
+  try {
+    const cleanupResult = await $`bunx wrangler d1 execute ${d1Name} --remote --file ${tempFileName} --json`.quiet().nothrow();
+
+    if (cleanupResult.exitCode !== 0) {
+      const errorOutput = cleanupResult.stderr.toString() || cleanupResult.stdout.toString();
+      log.error(`Failed to clean database: ${errorOutput}`);
       return false;
     }
 
-    const output = tablesResult.stdout.toString();
-    let tables: string[] = [];
+    return await verifyAllTablesEmpty(d1Name, tables);
+  } finally {
+    await unlink(tempFileName).catch(() => {});
+  }
+};
 
-    try {
-      const parsed = JSON.parse(output);
-      if (Array.isArray(parsed) && parsed[0]?.results) {
-        tables = parsed[0].results.map((r: { name: string }) => r.name);
-      }
-    } catch {
-      return true;
+const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
+  try {
+    const tables = await queryDatabaseTables(d1.name);
+
+    if (tables === null) {
+      return false;
     }
 
     if (tables.length === 0) {
       return true;
     }
 
-    // Create a single SQL file with all commands to ensure they execute in the same session
-    const deleteStatements = tables.map(table => `DELETE FROM ${table};`).join("\n");
-    const cleanupSQL = `PRAGMA foreign_keys = OFF;
-${deleteStatements}
-PRAGMA foreign_keys = ON;`;
-
-    const tempFileName = `.cleanup_${d1.id}_${Date.now()}.sql`;
-    await writeFile(tempFileName, cleanupSQL);
-
-    try {
-      // Execute the SQL file - this keeps all commands in the same session
-      const cleanupResult = await $`bunx wrangler d1 execute ${d1.name} --remote --file ${tempFileName} --json`.quiet().nothrow();
-
-      if (cleanupResult.exitCode !== 0) {
-        const errorOutput = cleanupResult.stderr.toString() || cleanupResult.stdout.toString();
-        log.error(`Failed to clean database: ${errorOutput}`);
-        return false;
-      }
-
-      // Verify that all tables are actually empty
-      let allEmpty = true;
-      for (const table of tables) {
-        const countResult = await $`bunx wrangler d1 execute ${d1.name} --remote --command "SELECT COUNT(*) as cnt FROM ${table};" --json`.quiet().nothrow();
-
-        if (countResult.exitCode === 0) {
-          try {
-            const parsed = JSON.parse(countResult.stdout.toString());
-            if (Array.isArray(parsed) && parsed[0]?.results?.[0]?.cnt > 0) {
-              log.error(`Table ${table} still has ${parsed[0].results[0].cnt} rows after cleanup`);
-              allEmpty = false;
-            }
-          } catch {
-            // Continue verification
-          }
-        }
-      }
-
-      return allEmpty;
-    } finally {
-      // Clean up temp file
-      await $`rm ${tempFileName}`.quiet().nothrow();
-    }
+    return await executeDatabaseCleanup(d1.name, d1.id, tables);
   } catch {
     return false;
   }
@@ -268,8 +297,12 @@ const CLOUDFLARE_ACCOUNT_ID = Bun.env['CLOUDFLARE_ACCOUNT_ID'] || "";
 type CleanResult = { success: boolean; count?: number };
 
 const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
+  if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ACCOUNT_ID) {
+    log.error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID environment variables");
+    return { success: false };
+  }
+
   try {
-    // List objects using Cloudflare API
     const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${r2.name}/objects`;
     const listResponse = await fetch(listUrl, {
       headers: {
@@ -294,7 +327,6 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
       return { success: true, count: 0 };
     }
 
-    // Delete each object using wrangler (which has auth context)
     for (const obj of objects) {
       await $`bunx wrangler r2 object delete ${r2.name}/${obj.key} --remote`.quiet().nothrow();
     }
@@ -305,102 +337,101 @@ const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
   }
 };
 
-const executeCleanup = async (selection: CleanupSelection): Promise<void> => {
+const executeCleanup = async (selection: CleanupSelection): Promise<{ success: string[]; failed: string[] }> => {
   log.info(`\nStarting cleanup...\n`);
 
-  let successCount = 0;
-  let failCount = 0;
+  const success: string[] = [];
+  const failed: string[] = [];
 
   for (const d1 of selection.d1ToClean) {
-    process.stdout.write(`  ${c.blue}[D1]${c.reset} ${tag(d1.env)} ${d1.name} ... `);
-    const success = await cleanD1Database(d1);
-    if (success) {
-      console.log(`${c.green}CLEANED${c.reset}`);
-      successCount++;
+    process.stdout.write(`${symbols.arrow} ${c.bold}${d1.name}${c.reset} `);
+    const isSuccess = await cleanD1Database(d1);
+    if (isSuccess) {
+      console.log(`${c.green}[OK]${c.reset}`);
+      success.push(d1.name);
     } else {
-      console.log(`${c.red}FAILED${c.reset}`);
-      failCount++;
+      console.log(`${c.red}[FAIL]${c.reset}`);
+      failed.push(d1.name);
     }
   }
 
   for (const r2 of selection.r2ToClean) {
-    process.stdout.write(`  ${c.magenta}[R2]${c.reset} ${tag(r2.env)} ${r2.name} ... `);
+    process.stdout.write(`${symbols.arrow} ${c.bold}${r2.name}${c.reset} `);
     const result = await cleanR2Bucket(r2);
     if (result.success) {
-      console.log(`${c.green}CLEANED${c.reset}`);
-      successCount++;
+      console.log(`${c.green}[OK]${c.reset}`);
+      success.push(r2.name);
     } else {
-      console.log(`${c.red}FAILED${c.reset}`);
-      failCount++;
+      console.log(`${c.red}[FAIL]${c.reset}`);
+      failed.push(r2.name);
     }
   }
 
-  log.info(`\n${c.bold}${"─".repeat(40)}${c.reset}`);
-  const summary = `  ${c.green}✓ Success: ${successCount}${c.reset}  ${c.red}✗ Failed: ${failCount}${c.reset}`;
-  log.info(summary);
-  log.info(`${c.bold}${"─".repeat(40)}${c.reset}\n`);
+  return { success, failed };
+};
+
+const getConfirmationFromUser = async (hasProd: boolean): Promise<boolean> => {
+  if (hasProd) {
+    const typed = await input({
+      message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
+    });
+    return typed === "DELETE";
+  }
+
+  return await confirm({
+    message: `${c.yellow}Proceed with cleanup?${c.reset}`,
+    default: false
+  });
+};
+
+const selectAndValidateResources = async (
+  service: ServiceResources,
+  resourceType: ResourceType,
+  environment: Environment
+): Promise<CleanupSelection> => {
+  const { d1, r2 } = getResourcesToClean(service, resourceType, environment);
+
+  if (d1.length === 0 && r2.length === 0) {
+    log.warn(`No resources found. Exiting.\n`);
+    process.exit(0);
+  }
+
+  return {
+    service,
+    resourceType,
+    environment,
+    d1ToClean: d1,
+    r2ToClean: r2,
+  };
 };
 
 const main = async () => {
   try {
-    banner();
+    printCleanBanner();
+    printCleanHeader();
 
-    // Step 1: Select service (with fuzzy search)
     const service = await selectService();
     console.log();
 
-    // Step 2: Select resource type (D1, R2, or both) - shows relevant names
     const resourceType = await selectResourceType(service);
     console.log();
 
-    // Step 3: Select environment - shows what will be cleaned
     const environment = await selectEnvironment(service, resourceType);
     console.log();
 
-    // Step 4: Auto-select resources based on choices (no extra prompts!)
-    const { d1, r2 } = getResourcesToClean(service, resourceType, environment);
+    const selection = await selectAndValidateResources(service, resourceType, environment);
+    printConfirmation(selection);
 
-    if (d1.length === 0 && r2.length === 0) {
-      log.warn(`No resources found. Exiting.\n`);
+    const hasProd = [...selection.d1ToClean, ...selection.r2ToClean].some(r => r.env === "production");
+    const isConfirmed = await getConfirmationFromUser(hasProd);
+
+    if (!isConfirmed) {
+      log.warn(`Aborted.\n`);
       process.exit(0);
     }
 
-    const selection: CleanupSelection = {
-      service,
-      resourceType,
-      environment,
-      d1ToClean: d1,
-      r2ToClean: r2,
-    };
-
-    // Step 5: Show confirmation summary
-    printConfirmation(selection);
-
-    // Step 6: Final confirmation
-    const hasProd = [...d1, ...r2].some(r => r.env === "production");
-
-    if (hasProd) {
-      const typed = await input({
-        message: `${c.red}${c.bold}Type "DELETE" to confirm:${c.reset}`
-      });
-      if (typed !== "DELETE") {
-        log.warn(`Aborted.\n`);
-        process.exit(0);
-      }
-    } else {
-      const confirmed = await confirm({
-        message: `${c.yellow}Proceed with cleanup?${c.reset}`,
-        default: false
-      });
-      if (!confirmed) {
-        log.warn(`Aborted.\n`);
-        process.exit(0);
-      }
-    }
-
-    // Step 7: Execute cleanup
-    await executeCleanup(selection);
-
+    const cleanupResult = await executeCleanup(selection);
+    printSummary({ success: cleanupResult.success, failed: cleanupResult.failed, skipped: [] });
     log.success(`Cleanup complete!\n`);
   } catch (err) {
     if ((err as Error).name === "ExitPromptError") {

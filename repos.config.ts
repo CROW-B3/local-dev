@@ -4,6 +4,7 @@ export type RepoCategory =
   | "client"
   | "sdk"
   | "docs"
+  | "blog"
   | "infrastructure"
   | "rnd"
   | "template"
@@ -34,6 +35,7 @@ export const REPOS: RepoConfig[] = [
 
   // Supporting Services
   { name: "bff-chat-service", description: "Chat BFF", category: "supporting-service", cloneByDefault: true, isPrivate: true },
+  { name: "bff-qna-service", description: "QnA BFF", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "mcp-service", description: "MCP Server", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "a2a-service", description: "A2A Service", category: "supporting-service", cloneByDefault: true, isPrivate: true },
   { name: "web-ingest-service", description: "Web Ingest", category: "supporting-service", cloneByDefault: true, isPrivate: true },
@@ -52,6 +54,9 @@ export const REPOS: RepoConfig[] = [
   { name: "internal-docs", description: "Internal Docs", category: "docs", cloneByDefault: true, isPrivate: true },
   { name: "public-docs", description: "Public Docs", category: "docs", cloneByDefault: true, isPrivate: false },
 
+  // Blog
+  { name: "blog.crowai.dev", description: "Engineering Blog", category: "blog", cloneByDefault: false, isPrivate: false },
+
   // Infrastructure
   { name: "infrastructure", description: "K8s Infra", category: "infrastructure", cloneByDefault: true, isPrivate: true },
 
@@ -59,6 +64,7 @@ export const REPOS: RepoConfig[] = [
   { name: "rnd", description: "R&D", category: "rnd", cloneByDefault: false, isPrivate: true },
   { name: "api-tests", description: "API Tests", category: "rnd", cloneByDefault: false, isPrivate: true },
   { name: "stitch-to-figma-assets", description: "Figma Assets", category: "rnd", cloneByDefault: false, isPrivate: true },
+  { name: "pattern-recognisition-poc", description: "Pattern Recognition POC", category: "rnd", cloneByDefault: false, isPrivate: true },
 
   // Templates (optional)
   { name: "npm-sdk-template", description: "SDK Template", category: "template", cloneByDefault: false, isPrivate: false },

@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { $ } from "bun";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { getReposToClone } from "../repos.config";
@@ -20,9 +19,12 @@ import {
   printHeader,
   printSummary,
   pullLatest,
+  renderer,
   repoExists,
   runInstall,
-  symbols,
+  runWithConcurrency,
+  stashChanges,
+  type PackageManager,
 } from "./utils";
 
 interface SyncResult {
@@ -36,55 +38,71 @@ const syncRepo = async (repoName: string, force: boolean): Promise<SyncResult> =
   const repoPath = getRepoPath(repoName);
 
   if (!repoExists(repoName)) {
+    renderer.update(repoName, "skip", "Not cloned");
     return { name: repoName, success: false, skipped: true, reason: "Not cloned" };
   }
 
   const hasChanges = await hasUncommittedChanges(repoPath);
-  const currentBranch = await getCurrentBranch(repoPath);
 
   if (hasChanges && !force) {
+    const currentBranch = await getCurrentBranch(repoPath);
+    renderer.update(repoName, "skip", `Dirty (${currentBranch})`);
     return { name: repoName, success: false, skipped: true, reason: `Dirty (${currentBranch})` };
   }
 
   if (hasChanges && force) {
-    await $`git -C ${repoPath} stash push -m "local-dev sync"`.quiet().nothrow();
+    renderer.update(repoName, "stashing");
+    await stashChanges(repoPath);
   }
 
+  renderer.update(repoName, "fetching");
   await fetchRemote(repoPath);
 
   if (await isRemoteEmpty(repoPath)) {
+    renderer.update(repoName, "skip", "Remote is empty");
     return { name: repoName, success: false, skipped: true, reason: "Remote is empty" };
   }
 
+  const currentBranch = await getCurrentBranch(repoPath);
   const defaultBranch = await getDefaultBranch(repoPath);
+
   if (currentBranch !== defaultBranch) {
+    renderer.update(repoName, "checkout", defaultBranch);
     const checkoutSuccess = await checkoutBranch(repoPath, defaultBranch);
     if (!checkoutSuccess) {
+      renderer.update(repoName, "error", `Checkout ${defaultBranch} failed`);
       return { name: repoName, success: false, skipped: false, reason: `Checkout ${defaultBranch} failed` };
     }
   }
 
+  renderer.update(repoName, "pulling");
   const pullSuccess = await pullLatest(repoPath);
   if (!pullSuccess) {
+    renderer.update(repoName, "error", "Pull failed");
     return { name: repoName, success: false, skipped: false, reason: "Pull failed" };
   }
 
-  const pm = detectPackageManager(repoPath);
+  const pm: PackageManager = detectPackageManager(repoPath);
   if (pm === "none") {
+    renderer.update(repoName, "done");
     return { name: repoName, success: true, skipped: false };
   }
 
+  renderer.update(repoName, "installing", undefined, pm);
   const installSuccess = await runInstall(repoPath);
   if (!installSuccess) {
+    renderer.update(repoName, "error", "Install failed", pm);
     return { name: repoName, success: false, skipped: false, reason: "Install failed" };
   }
 
-  // Initialize Husky if repo has .husky directory
+  renderer.update(repoName, "husky", undefined, pm);
   const huskySuccess = await initializeHusky(repoPath);
   if (!huskySuccess) {
+    renderer.update(repoName, "error", "Husky init failed", pm);
     return { name: repoName, success: false, skipped: false, reason: "Husky init failed" };
   }
 
+  renderer.update(repoName, "done", undefined, pm);
   return { name: repoName, success: true, skipped: false };
 };
 
@@ -111,9 +129,16 @@ const main = async () => {
       description: "Sync only specific repo(s)",
       default: [] as string[],
     })
+    .option("parallel", {
+      alias: "p",
+      type: "boolean",
+      description: "Sync repositories in parallel",
+      default: false,
+    })
     .example("$0", "Sync default repos")
     .example("$0 --force", "Stash changes and sync")
     .example("$0 --only core-auth-service", "Sync specific repo")
+    .example("$0 --parallel", "Sync repos in parallel")
     .help()
     .alias("help", "h")
     .parse();
@@ -139,25 +164,34 @@ const main = async () => {
     process.exit(1);
   }
 
-  log.info(`Repositories: ${colors.cyan}${repos.length}${colors.reset}\n`);
+  log.info(`Repositories: ${colors.cyan}${repos.length}${colors.reset}`);
+  log.info(`Mode: ${colors.cyan}${argv.parallel ? "Parallel" : "Sequential"}${colors.reset}\n`);
 
   const results = { success: [] as string[], failed: [] as string[], skipped: [] as string[] };
+  const SYNC_CONCURRENCY = argv.parallel ? 3 : 1;
 
   for (const repo of repos) {
-    process.stdout.write(`${symbols.arrow} ${colors.bold}${repo.name}${colors.reset} `);
+    renderer.addRepo(repo.name);
+  }
 
-    const result = await syncRepo(repo.name, argv.force);
+  renderer.start();
 
-    if (result.skipped) {
-      console.log(`${colors.yellow}[SKIP]${colors.reset} ${result.reason}`);
-      results.skipped.push(repo.name);
-    } else if (result.success) {
-      console.log(`${colors.green}[OK]${colors.reset}`);
-      results.success.push(repo.name);
-    } else {
-      console.log(`${colors.red}[FAIL]${colors.reset} ${result.reason}`);
-      results.failed.push(repo.name);
+  try {
+    const syncResults = await runWithConcurrency(repos, SYNC_CONCURRENCY, async repo => {
+      return syncRepo(repo.name, argv.force);
+    });
+
+    for (const result of syncResults) {
+      if (result.skipped) {
+        results.skipped.push(result.name);
+      } else if (result.success) {
+        results.success.push(result.name);
+      } else {
+        results.failed.push(result.name);
+      }
     }
+  } finally {
+    renderer.stop();
   }
 
   printSummary(results);
@@ -165,6 +199,7 @@ const main = async () => {
 };
 
 main().catch((err) => {
+  renderer.stop();
   log.error(`Unexpected error: ${err.message}`);
   process.exit(1);
 });
