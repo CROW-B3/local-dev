@@ -46,6 +46,27 @@ bun run sync --dry-run    # Preview without syncing
 bun run sync --help       # Show help
 ```
 
+### Cleanup
+
+⚠️ **DESTRUCTIVE** - Deletes all Cloudflare resources for an environment
+
+```bash
+bun run cleanup:dev       # Clean dev environment (crow-*-dev)
+bun run cleanup:prod      # Clean prod environment (crow-*)
+```
+
+**What gets deleted:**
+- D1 databases
+- R2 buckets
+- KV namespaces
+- Queues
+
+**Safety features:**
+- Pattern matching (dev: `crow-*-dev`, prod: `crow-*` excluding `-dev`)
+- Confirmation prompts for each resource type
+- Detailed listing before deletion
+- Summary report
+
 ## Workspace Structure
 
 ```

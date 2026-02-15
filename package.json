@@ -8,7 +8,11 @@
     "clone": "bun run src/clone.ts",
     "sync": "bun run src/sync.ts",
     "clone:all": "bun run src/clone.ts --all",
-    "sync:force": "bun run src/sync.ts --force"
+    "sync:force": "bun run src/sync.ts --force",
+    "cleanup:dev": "bun run src/cleanup.ts --env dev",
+    "cleanup:prod": "bun run src/cleanup.ts --env prod",
+    "clean:dev": "bun run src/cleanup-tables.ts --env dev",
+    "clean:prod": "bun run src/cleanup-tables.ts --env prod"
   },
   "devDependencies": {
     "@types/bun": "1.3.5",
@@ -21,6 +25,7 @@
   ],
   "author": "CROW-B3",
   "dependencies": {
+    "hono": "^4.11.9",
     "yargs": "18.0.0"
   }
 }
