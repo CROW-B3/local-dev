@@ -21,6 +21,7 @@
   ],
   "author": "CROW-B3",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.992.0",
     "@inquirer/prompts": "^8.1.0",
     "yargs": "18.0.0"
   }

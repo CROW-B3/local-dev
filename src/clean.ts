@@ -2,12 +2,24 @@
 
 import { $ } from "bun";
 import { writeFile, unlink } from "fs/promises";
-import { search, select, confirm, input } from "@inquirer/prompts";
+import { search, select, confirm, input, checkbox } from "@inquirer/prompts";
+import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import { SERVICES, type ServiceResources, type D1Resource, type R2Resource } from "../resources.config";
 import { colors as c, log, printSummary, symbols } from "./utils";
 
 type ResourceType = "d1" | "r2" | "both";
 type Environment = "production" | "dev" | "local" | "both";
+
+interface TableInfo {
+  name: string;
+  count: number;
+}
+
+interface D1CleanupConfig {
+  resource: D1Resource;
+  tables: string[];
+  allTables: boolean;
+}
 
 interface CleanupSelection {
   service: ServiceResources;
@@ -15,6 +27,7 @@ interface CleanupSelection {
   environment: Environment;
   d1ToClean: D1Resource[];
   r2ToClean: R2Resource[];
+  d1Configs?: D1CleanupConfig[];
 }
 
 const printCleanBanner = () => {
@@ -178,8 +191,16 @@ const printConfirmation = (selection: CleanupSelection): void => {
   log.info(`${c.bold}Environment:${c.reset} ${envLabel}`);
   log.info("");
 
-  if (selection.d1ToClean.length > 0) {
-    log.info(`${c.blue}${c.bold}D1 Databases to wipe:${c.reset}`);
+  if (selection.d1Configs && selection.d1Configs.length > 0) {
+    log.info(`${c.blue}${c.bold}D1 Tables to delete:${c.reset}`);
+    for (const config of selection.d1Configs) {
+      log.info(`  ${tag(config.resource.env)} ${config.resource.name}`);
+      log.info(`  ${c.dim}└─ ID: ${config.resource.id}${c.reset}`);
+      log.info(`  ${c.dim}└─ Tables: ${config.tables.join(", ")}${c.reset}`);
+    }
+    log.info("");
+  } else if (selection.d1ToClean.length > 0) {
+    log.info(`${c.blue}${c.bold}D1 Databases to wipe (all tables):${c.reset}`);
     for (const d1 of selection.d1ToClean) {
       log.info(`  ${tag(d1.env)} ${d1.name}`);
       log.info(`  ${c.dim}└─ ID: ${d1.id}${c.reset}`);
@@ -195,7 +216,10 @@ const printConfirmation = (selection: CleanupSelection): void => {
     log.info("");
   }
 
-  const hasProd = [...selection.d1ToClean, ...selection.r2ToClean].some(r => r.env === "production");
+  const resourcesList = selection.d1Configs
+    ? selection.d1Configs.map(c => c.resource)
+    : selection.d1ToClean;
+  const hasProd = [...resourcesList, ...selection.r2ToClean].some(r => r.env === "production");
   if (hasProd) {
     log.warn(`⚠ WARNING: This includes PRODUCTION resources!\n`);
   }
@@ -219,6 +243,94 @@ const queryDatabaseTables = async (d1Name: string): Promise<string[] | null> => 
   }
 
   return [];
+};
+
+const getTableCounts = async (d1Name: string, tables: string[]): Promise<Map<string, number>> => {
+  const counts = new Map<string, number>();
+
+  if (tables.length === 0) return counts;
+
+  // Query tables individually to avoid D1's compound SELECT limit
+  for (const table of tables) {
+    const countQuery = `SELECT COUNT(*) as cnt FROM ${table}`;
+    const countResult = await $`bunx wrangler d1 execute ${d1Name} --remote --command ${countQuery} --json`.quiet().nothrow();
+
+    if (countResult.exitCode !== 0) {
+      log.error(`Failed to get count for table ${table}: ${countResult.stderr.toString() || countResult.stdout.toString()}`);
+      counts.set(table, 0);
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(countResult.stdout.toString());
+      if (Array.isArray(parsed) && parsed[0]?.results && parsed[0].results[0]) {
+        counts.set(table, parsed[0].results[0].cnt);
+      } else {
+        counts.set(table, 0);
+      }
+    } catch (err) {
+      log.error(`Failed to parse count for table ${table}: ${(err as Error).message}`);
+      counts.set(table, 0);
+    }
+  }
+
+  return counts;
+};
+
+const selectTablesToClean = async (d1: D1Resource): Promise<string[] | null> => {
+  log.info(`\n${c.bold}Fetching tables from ${c.blue}${d1.name}${c.reset}${c.bold}...${c.reset}`);
+
+  const tables = await queryDatabaseTables(d1.name);
+
+  if (tables === null) {
+    log.error(`Failed to fetch tables from ${d1.name}`);
+    return null;
+  }
+
+  if (tables.length === 0) {
+    log.info(`${c.dim}No tables found in ${d1.name}${c.reset}`);
+    return [];
+  }
+
+  log.info(`${c.dim}Fetching record counts...${c.reset}`);
+  const counts = await getTableCounts(d1.name, tables);
+
+  const totalRecords = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+
+  const choices = tables.map(table => {
+    const count = counts.get(table) ?? 0;
+    return {
+      name: `${table}`,
+      value: table,
+      description: `${c.dim}${count.toLocaleString()} record${count !== 1 ? 's' : ''}${c.reset}`,
+      checked: false,
+    };
+  });
+
+  choices.unshift({
+    name: `${c.cyan}[Select All]${c.reset}`,
+    value: "__SELECT_ALL__",
+    description: `${c.dim}${tables.length} tables, ${totalRecords.toLocaleString()} total records${c.reset}`,
+    checked: false,
+  });
+
+  const selected = await checkbox({
+    message: `${c.bold}Select tables to delete from ${tag(d1.env)} ${d1.name}:${c.reset}\n  ${c.dim}(Use ${c.cyan}Space${c.reset}${c.dim} to select, ${c.cyan}Enter${c.reset}${c.dim} to confirm)${c.reset}`,
+    choices,
+    pageSize: 15,
+    validate: (answer: string[]) => {
+      if (answer.length === 0) {
+        return 'Please select at least one table, or press Ctrl+C to cancel';
+      }
+      return true;
+    },
+  });
+
+  if (selected.includes("__SELECT_ALL__")) {
+    return tables;
+  }
+
+  return selected;
 };
 
 const verifyAllTablesEmpty = async (d1Name: string, tables: string[]): Promise<boolean> => {
@@ -273,12 +385,18 @@ PRAGMA foreign_keys = ON;`;
   }
 };
 
-const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
+const cleanD1Database = async (d1: D1Resource, tablesToClean?: string[]): Promise<boolean> => {
   try {
-    const tables = await queryDatabaseTables(d1.name);
+    let tables: string[];
 
-    if (tables === null) {
-      return false;
+    if (tablesToClean !== undefined) {
+      tables = tablesToClean;
+    } else {
+      const allTables = await queryDatabaseTables(d1.name);
+      if (allTables === null) {
+        return false;
+      }
+      tables = allTables;
     }
 
     if (tables.length === 0) {
@@ -291,48 +409,65 @@ const cleanD1Database = async (d1: D1Resource): Promise<boolean> => {
   }
 };
 
-const CLOUDFLARE_API_TOKEN = Bun.env['CLOUDFLARE_API_TOKEN'] || "";
 const CLOUDFLARE_ACCOUNT_ID = Bun.env['CLOUDFLARE_ACCOUNT_ID'] || "";
+const R2_ACCESS_KEY_ID = Bun.env['R2_ACCESS_KEY_ID'] || "";
+const R2_SECRET_ACCESS_KEY = Bun.env['R2_SECRET_ACCESS_KEY'] || "";
 
 type CleanResult = { success: boolean; count?: number };
 
+const getR2Client = (): S3Client => {
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: R2_ACCESS_KEY_ID,
+      secretAccessKey: R2_SECRET_ACCESS_KEY,
+    },
+  });
+};
+
 const cleanR2Bucket = async (r2: R2Resource): Promise<CleanResult> => {
-  if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ACCOUNT_ID) {
-    log.error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID environment variables");
+  if (!R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !CLOUDFLARE_ACCOUNT_ID) {
+    log.error("Missing R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, or CLOUDFLARE_ACCOUNT_ID env vars");
     return { success: false };
   }
 
   try {
-    const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${r2.name}/objects`;
-    const listResponse = await fetch(listUrl, {
-      headers: {
-        "Authorization": `Bearer ${CLOUDFLARE_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
+    const client = getR2Client();
+    let totalDeleted = 0;
+    let continuationToken: string | undefined;
 
-    if (!listResponse.ok) {
-      if (listResponse.status === 404) {
-        return { success: true, count: 0 };
+    do {
+      const listResponse = await client.send(new ListObjectsV2Command({
+        Bucket: r2.name,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      }));
+
+      const objects = listResponse.Contents || [];
+      if (objects.length === 0) break;
+
+      const keysToDelete = objects
+        .map(obj => obj.Key)
+        .filter((key): key is string => !!key);
+
+      if (keysToDelete.length > 0) {
+        await client.send(new DeleteObjectsCommand({
+          Bucket: r2.name,
+          Delete: {
+            Objects: keysToDelete.map(Key => ({ Key })),
+            Quiet: true,
+          },
+        }));
       }
-      const errText = await listResponse.text();
-      log.error(`R2 API Error (${listResponse.status}): ${errText}`);
-      return { success: false };
-    }
 
-    const listData = await listResponse.json() as { result?: { key: string }[] };
-    const objects = listData.result || [];
+      totalDeleted += keysToDelete.length;
+      continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined;
+    } while (continuationToken);
 
-    if (objects.length === 0) {
-      return { success: true, count: 0 };
-    }
-
-    for (const obj of objects) {
-      await $`bunx wrangler r2 object delete ${r2.name}/${obj.key} --remote`.quiet().nothrow();
-    }
-
-    return { success: true, count: objects.length };
-  } catch {
+    return { success: true, count: totalDeleted };
+  } catch (err) {
+    log.error(`R2 error: ${(err as Error).message}`);
     return { success: false };
   }
 };
@@ -343,15 +478,34 @@ const executeCleanup = async (selection: CleanupSelection): Promise<{ success: s
   const success: string[] = [];
   const failed: string[] = [];
 
-  for (const d1 of selection.d1ToClean) {
-    process.stdout.write(`${symbols.arrow} ${c.bold}${d1.name}${c.reset} `);
-    const isSuccess = await cleanD1Database(d1);
-    if (isSuccess) {
-      console.log(`${c.green}[OK]${c.reset}`);
-      success.push(d1.name);
-    } else {
-      console.log(`${c.red}[FAIL]${c.reset}`);
-      failed.push(d1.name);
+  if (selection.d1Configs && selection.d1Configs.length > 0) {
+    for (const config of selection.d1Configs) {
+      const tableInfo = config.allTables
+        ? `${c.dim}all tables${c.reset}`
+        : `${c.dim}${config.tables.length} selected table${config.tables.length !== 1 ? 's' : ''}${c.reset}`;
+
+      process.stdout.write(`${symbols.arrow} ${c.bold}${config.resource.name}${c.reset} ${tableInfo} `);
+
+      const isSuccess = await cleanD1Database(config.resource, config.tables);
+      if (isSuccess) {
+        console.log(`${c.green}[OK]${c.reset}`);
+        success.push(config.resource.name);
+      } else {
+        console.log(`${c.red}[FAIL]${c.reset}`);
+        failed.push(config.resource.name);
+      }
+    }
+  } else {
+    for (const d1 of selection.d1ToClean) {
+      process.stdout.write(`${symbols.arrow} ${c.bold}${d1.name}${c.reset} `);
+      const isSuccess = await cleanD1Database(d1);
+      if (isSuccess) {
+        console.log(`${c.green}[OK]${c.reset}`);
+        success.push(d1.name);
+      } else {
+        console.log(`${c.red}[FAIL]${c.reset}`);
+        failed.push(d1.name);
+      }
     }
   }
 
@@ -359,7 +513,7 @@ const executeCleanup = async (selection: CleanupSelection): Promise<{ success: s
     process.stdout.write(`${symbols.arrow} ${c.bold}${r2.name}${c.reset} `);
     const result = await cleanR2Bucket(r2);
     if (result.success) {
-      console.log(`${c.green}[OK]${c.reset}`);
+      console.log(`${c.green}[OK]${c.reset} ${c.dim}(${result.count ?? 0} objects deleted)${c.reset}`);
       success.push(r2.name);
     } else {
       console.log(`${c.red}[FAIL]${c.reset}`);
@@ -396,12 +550,60 @@ const selectAndValidateResources = async (
     process.exit(0);
   }
 
+  let d1Configs: D1CleanupConfig[] | undefined;
+
+  if (d1.length > 0) {
+    console.log();
+    const cleanupMode = await select({
+      message: "D1 cleanup mode:",
+      choices: [
+        {
+          name: `${c.cyan}Select specific tables${c.reset} ${c.dim}(recommended)${c.reset}`,
+          value: "selective" as const,
+          description: "Choose which tables to delete from each database",
+        },
+        {
+          name: `${c.red}Delete all tables${c.reset}`,
+          value: "all" as const,
+          description: "Delete all data from all tables in selected databases",
+        },
+      ],
+    });
+
+    if (cleanupMode === "selective") {
+      d1Configs = [];
+
+      for (const d1Resource of d1) {
+        const selectedTables = await selectTablesToClean(d1Resource);
+
+        if (selectedTables === null) {
+          log.error(`Skipping ${d1Resource.name} due to errors`);
+          continue;
+        }
+
+        if (selectedTables.length > 0) {
+          d1Configs.push({
+            resource: d1Resource,
+            tables: selectedTables,
+            allTables: false,
+          });
+        }
+      }
+
+      if (d1Configs.length === 0 && r2.length === 0) {
+        log.warn(`No resources selected for cleanup. Exiting.\n`);
+        process.exit(0);
+      }
+    }
+  }
+
   return {
     service,
     resourceType,
     environment,
     d1ToClean: d1,
     r2ToClean: r2,
+    d1Configs,
   };
 };
 

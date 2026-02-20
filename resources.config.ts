@@ -209,10 +209,15 @@ export const SERVICES: ServiceResources[] = [
     service: "web-ingest-service",
     displayName: "Web Ingest Service",
     d1: [
-      { name: "crow-web-ingest-service-db-dev", id: "e73411e4-8c1b-48a6-ad20-2bd74249d29a", env: "dev" },
+      { name: "crow-web-ingest-service-db-local", id: "901ab2d2-9aa8-495b-ab06-0cb3f53c28cf", env: "local" },
+      { name: "crow-web-ingest-service-db-dev", id: "d84b7a59-d8d0-47ce-a59d-0cb5e5904ebc", env: "dev" },
       { name: "crow-web-ingest-service-db", id: "58b32c68-d807-4b42-9075-08a12078bdf7", env: "production" },
     ],
-    r2: [],
+    r2: [
+      { name: "crow-web-ingest-service-store-local", env: "local" },
+      { name: "crow-web-ingest-service-store-dev", env: "dev" },
+      { name: "crow-web-ingest-service-store", env: "production" },
+    ],
   },
 ];
 
