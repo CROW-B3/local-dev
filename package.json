@@ -7,6 +7,8 @@
     "start": "bun run src/start.ts",
     "clone": "bun run src/clone.ts",
     "sync": "bun run src/sync.ts",
+    "clean": "bun run src/clean.ts",
+    "checkout": "bun run src/checkout.ts",
     "clone:all": "bun run src/clone.ts --all",
     "sync:force": "bun run src/sync.ts --force"
   },
@@ -21,6 +23,8 @@
   ],
   "author": "CROW-B3",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.992.0",
+    "@inquirer/prompts": "^8.1.0",
     "yargs": "18.0.0"
   }
 }
