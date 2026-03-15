@@ -66,6 +66,27 @@ bun run clean             # Interactive D1/R2 cleanup
 
 Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` for R2 operations.
 
+### Cleanup
+
+⚠️ **DESTRUCTIVE** - Deletes all Cloudflare resources for an environment
+
+```bash
+bun run cleanup:dev       # Clean dev environment (crow-*-dev)
+bun run cleanup:prod      # Clean prod environment (crow-*)
+```
+
+**What gets deleted:**
+- D1 databases
+- R2 buckets
+- KV namespaces
+- Queues
+
+**Safety features:**
+- Pattern matching (dev: `crow-*-dev`, prod: `crow-*` excluding `-dev`)
+- Confirmation prompts for each resource type
+- Detailed listing before deletion
+- Summary report
+
 ## Workspace Structure
 
 ```
