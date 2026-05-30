@@ -66,6 +66,40 @@ bun run clean             # Interactive D1/R2 cleanup
 
 Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` for R2 operations.
 
+### Shutdown / Startup (kill-switch for Cloudflare spend)
+
+These two commands work together. `shutdown` strips every service's
+`wrangler.jsonc` down to a stub (no bindings, no cron triggers, no queues, no
+AI, no D1/R2/KV/Vectorize, no routes/vars/DOs/containers/env) so that any
+subsequent `wrangler deploy` produces a worker that consumes nothing. The
+original config for every service is saved to `startup.manifest.json` so
+`startup` can later restore everything (and recreate the cloud resources via
+the wrangler CLI).
+
+**Important:** `shutdown` modifies only files in this workspace. It does
+**not** delete anything from your Cloudflare account.
+
+```bash
+bun run shutdown:dry      # preview what would be stripped — no writes
+bun run shutdown          # extract manifest + strip every wrangler.jsonc
+                          # (refuses if startup.manifest.json already exists;
+                          #  pass --force to override)
+
+bun run startup           # DRY RUN — prints the wrangler commands it would run
+bun run startup:execute   # actually create D1/R2/KV/Queues/Vectorize and
+                          # restore each wrangler.jsonc from the manifest
+                          # (new D1/KV ids are captured and substituted)
+```
+
+Useful flags on `startup`:
+
+- `--only=<service>` — process just one service
+- `--kinds=d1,r2,kv,queues,vectorize` — limit which resource kinds to create
+- `--restore-only` — skip all wrangler calls; only restore wrangler.jsonc files
+
+After `startup:execute` you still need to: `wrangler deploy` each service,
+re-run drizzle migrations, and re-set any `wrangler secret` values.
+
 ### Cleanup
 
 ⚠️ **DESTRUCTIVE** - Deletes all Cloudflare resources for an environment

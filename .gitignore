@@ -36,3 +36,8 @@ build/
 out/
 
 .wrangler/
+
+# Cloudflare shutdown manifest — contains R2 access keys and internal service tokens
+# extracted from per-service wrangler.jsonc configs. Do not commit.
+startup.manifest.json
+

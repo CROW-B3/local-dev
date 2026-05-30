@@ -14,7 +14,13 @@
     "cleanup:dev": "bun run src/cleanup.ts --env dev",
     "cleanup:prod": "bun run src/cleanup.ts --env prod",
     "clean:dev": "bun run src/cleanup-tables.ts --env dev",
-    "clean:prod": "bun run src/cleanup-tables.ts --env prod"
+    "clean:prod": "bun run src/cleanup-tables.ts --env prod",
+    "wipe": "bun run src/cleanup.ts",
+    "wipe:retry": "bun run src/cleanup-retry.ts",
+    "shutdown": "bun run src/shutdown.ts",
+    "shutdown:dry": "bun run src/shutdown.ts --dry-run",
+    "startup": "bun run src/startup.ts",
+    "startup:execute": "bun run src/startup.ts --execute"
   },
   "devDependencies": {
     "@types/bun": "1.3.5",
@@ -30,6 +36,7 @@
     "@aws-sdk/client-s3": "^3.992.0",
     "@inquirer/prompts": "^8.1.0",
     "hono": "^4.11.9",
+    "jsonc-parser": "^3.3.1",
     "yargs": "18.0.0"
   }
 }
